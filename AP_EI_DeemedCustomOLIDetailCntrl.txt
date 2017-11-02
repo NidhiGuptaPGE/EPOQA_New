@@ -1,0 +1,312 @@
+/**************************************************************************************************   
+Apex Controller Name :  AP_EI_DeemedCustomOLIDetailCntrl
+Version              :  1.0                                                                          
+Created Date         :  June 23, 2016                                                               
+Function             :  Controller for AP_EI_DeemedCustomOLI_Detail page
+Description          :  This is an extension controller for OLI custom detail page.
+Story                :                                                                               
+Work Task            :                                                                               
+Modification Log     :                                                                               
+*--------------------------------------------------------------------------------------------------  
+* Developer                   Date                   Description                                     
+* -------------------------------------------------------------------------------------------------  
+* Aarti Jindal               8/30/2016              First Iteration            
+***************************************************************************************************/
+
+public with sharing class AP_EI_DeemedCustomOLIDetailCntrl{
+    public final Set<String> PROFILES_ALLOWD_EDIT = new Set<String>{'System Administrator','Technology Enablement'};
+    public OpportunityLineItem oli {get;set;}
+    public List<EI_Deemed_Sections__c> sections {get;set;}
+    public string secVar{get;set;}
+    public Map<String,List<Schema.FieldSetMember>> fieldSetNameAndMembers {get;set;}
+    public ApexPages.StandardController sController;
+    public Boolean isLocked{get;set;}
+    public String allNameString{get;set;} 
+    Map<String,AP_EI_ReadOnly_Fields__c> mapOfReadOnlyFields = AP_EI_ReadOnly_Fields__c.getAll();
+    public List<String> readOnlyApiNamesDeemed = new List<String>();
+    public List<String> readOnlyApiNamesCustom = new List<String>();
+    public OpportunityLineItem PM {get;set;}
+    public string workflowtype{get;set;}
+    public boolean CheckESA{get;set;}
+    public boolean editable{get;set;}
+    public List<Schema.FieldSetMember> fieldSetMemberList{get;set;}
+    public boolean showAttribute{get;set;}
+    public boolean editablePermit{get;set;}
+    public boolean hascopay{get;set;}
+    
+    
+    //Added By Sambit on 6/7/2017
+    public List<Schema.FieldSetMember> getMeasureDetailsER() {
+        return SObjectType.OpportunityLineItem.FieldSets.ESA_Measure_Details_Enrollment.getFields();
+    }
+    public List<Schema.FieldSetMember> getMeasureDetails() {
+        return SObjectType.OpportunityLineItem.FieldSets.ESA_Measure_Details.getFields();
+    }
+    
+    public List<Schema.FieldSetMember> getMeasureDetailsWeatherization() {
+        return SObjectType.OpportunityLineItem.FieldSets.ESA_MeasureDetailsWeatherization.getFields();
+    }
+     public List<Schema.FieldSetMember> getMeasureDetailsRR() {
+        return SObjectType.OpportunityLineItem.FieldSets.ESA_MeasureDetailsR_R.getFields();
+    }
+    public List<Schema.FieldSetMember> getMeasureDetailsRL() {
+        return SObjectType.OpportunityLineItem.FieldSets.ESA_MeasureDetailsRL.getFields();
+    }
+    public List<Schema.FieldSetMember> getMeasureDetailsLA() {
+        return SObjectType.OpportunityLineItem.FieldSets.ESA_MeasureDetailsLargeAppliances.getFields();
+    }
+    public List<Schema.FieldSetMember> getApprovalStatus() {
+        return SObjectType.OpportunityLineItem.FieldSets.ESA_Approval_Status.getFields();
+    }
+    
+    public List<Schema.FieldSetMember> getACTuneUpDetails() {
+        return SObjectType.OpportunityLineItem.FieldSets.ESA_A_C_Tune_Up_Details.getFields();
+    }
+    
+    public List<Schema.FieldSetMember> getSavings() {
+        return SObjectType.OpportunityLineItem.FieldSets.ESA_Savings.getFields();
+    }
+    public List<Schema.FieldSetMember> getReferigeratorLeveraging() {
+        return SObjectType.OpportunityLineItem.FieldSets.ESA_Referigerator_Leveraging.getFields();
+    }
+    public List<Schema.FieldSetMember> getPriceDtls() {
+        return SObjectType.OpportunityLineItem.FieldSets.ESA_Price.getFields();
+    }
+    
+    public List<Schema.FieldSetMember> getMeasureDtls() {
+        return SObjectType.OpportunityLineItem.FieldSets.ESA_Measure_Status.getFields();
+    }
+    
+    public static List<Schema.FieldSetMember> readFieldSet(String fieldSetName, String ObjectName)
+  {
+      Map<String, Schema.SObjectType> GlobalDescribeMap = Schema.getGlobalDescribe(); 
+      Schema.SObjectType SObjectTypeObj = GlobalDescribeMap.get(ObjectName);
+      Schema.DescribeSObjectResult DescribeSObjectResultObj = SObjectTypeObj.getDescribe();
+  
+      Schema.FieldSet fieldSetObj = DescribeSObjectResultObj.FieldSets.getMap().get(fieldSetName);
+    return fieldSetObj.getFields(); 
+  }
+    //end of changes by sambit
+    
+    /**
+    * @Description: Constructor of class
+    * @Parameter: ApexPages.StandardController
+    * @Return: None
+    * @USage: Used to filter out sections/fields to be displayed based on measure type code
+    **/
+    public AP_EI_DeemedCustomOLIDetailCntrl(ApexPages.StandardController controller) {
+      showAttribute=false;
+      editable=false;
+      editablePermit=false;
+      hascopay=false;
+        sController = controller;
+        Id profileId = Userinfo.getProfileId();
+        if(!mapOfReadOnlyFields.isEmpty()){
+            for(String apiName:mapOfReadOnlyFields.keySet()){
+                if(mapOfReadOnlyFields.get(apiName).Measure_Type_Code__c == 'Deemed' || mapOfReadOnlyFields.get(apiName).Measure_Type_Code__c == 'Both'){
+                    readOnlyApiNamesDeemed.add(apiName);
+                }
+                if(mapOfReadOnlyFields.get(apiName).Measure_Type_Code__c == 'Custom' || mapOfReadOnlyFields.get(apiName).Measure_Type_Code__c == 'Both'){
+                    readOnlyApiNamesCustom.add(apiName);
+                }   
+            }
+        }   
+        allNameString ='';
+        oli = (OpportunityLineItem)controller.getRecord();
+        String SobjectApiName = 'OpportunityLineItem';
+        Map<String, Schema.SObjectType> schemaMap = Schema.getGlobalDescribe();
+        Map<String, Schema.SObjectField> fieldMap = schemaMap.get(SobjectApiName).getDescribe().fields.getMap();
+        String commaSepratedFields = '';
+        String query;
+        Map<ID,Schema.RecordTypeInfo> oppRecTypeMap = Opportunity.sObjectType.getDescribe().getRecordTypeInfosById();
+        List<AP_EI_Locked_Record_Types__c> lockedRecNames = AP_EI_Locked_Record_Types__c.getall().values();
+        for(String fieldName : fieldMap.keyset()){
+            if(commaSepratedFields == null || commaSepratedFields == ''){
+                commaSepratedFields = fieldName;
+            }else{
+                commaSepratedFields = commaSepratedFields + ', ' + fieldName;
+            }
+        }
+        query = 'select ' + commaSepratedFields + ',Opportunity.Program_EI__r.Processing_Workflow_EI__c,Opportunity.Name,Product2.meas_Type_Code_EI__c,Opportunity.RecordTypeId,PriceBookEntry.Product2Id,product2.ESA_Category__c,product2.name,product2.ESA_Allow_Permit_Fee__c,product2.ESA_Has_Copay__c from ' + SobjectApiName + ' Where Id =\''+oli.Id+'\'';
+        String profileName=[Select Id,Name from Profile where Id=:profileId].Name;
+        oli = Database.query(query);
+        workflowtype=oli.Opportunity.Program_EI__r.Processing_Workflow_EI__c;
+        editablePermit=oli.product2.ESA_Allow_Permit_Fee__c;
+        hascopay=oli.product2.ESA_Has_Copay__c;
+        //Showing fields for attribute measures  
+        if(ESA_Attribute_Measures__c.getInstance('Attribute Measures').Measure_Code__c.contains(oli.product2.name)){
+          showAttribute=true;
+          fieldSetMemberList=new list<Schema.FieldSetMember>();
+          fieldSetMemberList =readFieldSet(oli.product2.name,'OpportunityLineItem');
+        }
+        if(oli.product2.ESA_Category__c=='Provided')
+          editable=true;
+        else if(oli.product2.ESA_Category__c=='Supplied' || oli.product2.ESA_Category__c=='Non-Supplied')
+          editable=false;
+        if(workflowtype=='AC Tune-Up' || workflowtype=='Weatherization' || workflowtype=='Repair and Replacement' || workflowtype=='Refrigerator Leveraging' || workflowtype=='Large Appliances' || workflowtype=='Enrollment')
+            CheckESA=true;
+        else 
+            CheckESA=false;
+        for(AP_EI_Locked_Record_Types__c recName : lockedRecNames ){
+            if(oppRecTypeMap.get(oli.Opportunity.RecordTypeId).getName().containsIgnoreCase(recName.Name) && !PROFILES_ALLOWD_EDIT.contains(profileName)){
+                isLocked = true;
+                break;    
+            }
+        }
+        fieldSetNameAndMembers = new Map<String,List<Schema.FieldSetMember>>(); 
+        if(oli.Product2.meas_Type_Code_EI__c == 'Deemed'){
+            secVar = 'D';
+            allNameString = string.join(readOnlyApiNamesDeemed,',');
+            sections = [SELECT id,Name,Order_Number__c,Field_Set_Name__c,Type__c from EI_Deemed_Sections__c where Type__c='Deemed' OR Type__c LIKE 'Both%' ORDER BY Order_Number__c];
+        }
+        else{
+            if(oli.Product2.meas_Type_Code_EI__c == 'Custom'){
+                secVar = 'C';
+                allNameString = string.join(readOnlyApiNamesCustom,',');
+                sections = [SELECT id,Name,Order_Number__c,Field_Set_Name__c, Type__c from EI_Deemed_Sections__c where Type__c='Custom' OR Type__c LIKE 'Both%' ORDER BY Order_Number__c];
+            }
+        }
+        if(sections!=null){
+            for(EI_Deemed_Sections__c sec:sections){
+               Schema.FieldSet fs1 = Schema.SObjectType.OpportunityLineItem.fieldSets.getMap().get(sec.Field_Set_Name__c);
+               fieldSetNameAndMembers.put(sec.Field_Set_Name__c,fs1.getFields());   
+            }
+        } 
+        
+        //Added By Sambit on 6/7/2017
+        
+        string queryString = 'select id';
+        if(workflowtype=='AC Tune-Up'){
+            for(Schema.FieldSetMember fld :SObjectType.OpportunityLineItem.FieldSets.ESA_Measure_Details.getFields()) {
+             queryString += ', ' + fld.getFieldPath();
+            }  
+        } 
+        else if(workflowtype=='Weatherization'){
+            for(Schema.FieldSetMember fld :SObjectType.OpportunityLineItem.FieldSets.ESA_MeasureDetailsWeatherization.getFields()) {
+             queryString += ', ' + fld.getFieldPath();
+            }  
+        } 
+        else if(workflowtype=='Repair and Replacement'){
+            for(Schema.FieldSetMember fld :SObjectType.OpportunityLineItem.FieldSets.ESA_MeasureDetailsR_R.getFields()) {
+             queryString += ', ' + fld.getFieldPath();
+            }  
+        } 
+        else if(workflowtype=='Refrigerator Leveraging'){
+            for(Schema.FieldSetMember fld :SObjectType.OpportunityLineItem.FieldSets.ESA_MeasureDetailsRL.getFields()) {
+             queryString += ', ' + fld.getFieldPath();
+            }  
+        } 
+        else if(workflowtype=='Large Appliances'){
+            for(Schema.FieldSetMember fld :SObjectType.OpportunityLineItem.FieldSets.ESA_MeasureDetailsLargeAppliances.getFields()) {
+             queryString += ', ' + fld.getFieldPath();
+            }  
+        }
+        else if(workflowtype=='Enrollment'){
+          for(Schema.FieldSetMember fld :SObjectType.OpportunityLineItem.FieldSets.ESA_Measure_Details_Enrollment.getFields()) {
+             queryString += ', ' + fld.getFieldPath();
+            } 
+        }
+        for(Schema.FieldSetMember fld :SObjectType.OpportunityLineItem.FieldSets.ESA_Approval_Status.getFields()) {
+         queryString += ', ' + fld.getFieldPath();
+        } 
+        for(Schema.FieldSetMember fld :SObjectType.OpportunityLineItem.FieldSets.ESA_A_C_Tune_Up_Details.getFields()) {
+         queryString += ', ' + fld.getFieldPath();
+        } 
+        for(Schema.FieldSetMember fld :SObjectType.OpportunityLineItem.FieldSets.ESA_Savings.getFields()) {
+         queryString += ', ' + fld.getFieldPath();
+        } 
+        for(Schema.FieldSetMember fld :SObjectType.OpportunityLineItem.FieldSets.ESA_Referigerator_Leveraging.getFields()) {
+         queryString += ', ' + fld.getFieldPath();
+        } 
+        for(Schema.FieldSetMember fld :SObjectType.OpportunityLineItem.FieldSets.ESA_Price.getFields()) {
+         queryString += ', ' + fld.getFieldPath();
+        }
+        for(Schema.FieldSetMember fld :SObjectType.OpportunityLineItem.FieldSets.ESA_Measure_Status.getFields()) {
+         queryString += ', ' + fld.getFieldPath();
+        }
+        //queryString += ', ' + 'Measure_Code_EI__c'; //temp for demo
+        if(showAttribute){
+          for(Schema.FieldSetMember fld :fieldSetMemberList) {
+           queryString += ', ' + fld.getFieldPath();
+          }
+        }
+        queryString += ' from OpportunityLineItem '+'Where Id =\''+oli.Id+'\'';
+        system.debug('Query is '+queryString);
+        PM=Database.query(queryString);
+        system.debug('Query result is '+PM);
+        //end of changes by sambit
+    }
+    
+     /**
+    * @Description: Function called on click of Edit button
+    * @Parameter: None
+    * @Return: PageReference
+    * @USage: 
+    **/
+    public PageReference EditAction() {
+        PageReference retPr = new PageReference('/apex/AP_EI_DeemedCustomOLI_Edit?Id='+oli.Id);
+        retPr.setRedirect(true);
+        return retPr;
+    }
+    
+    /**
+    * @Description: Function called on click of Delete button
+    * @Parameter: None
+    * @Return: PageReference
+    * @USage: 
+    **/
+    public PageReference DeleteAction() {
+        try{
+            Id pId = oli.OpportunityId;
+            delete oli;
+            if(CheckESA){
+                delete PM;
+            }
+            PageReference pr = new PageReference('/'+pId);
+            return pr;
+        }catch(Exception ex){
+            EI_CreateErrorLog.upsertException(EI_CreateErrorLog.logException('AP_EI_DeemedCustomOLIEditCntrl', ex));
+            ApexPages.addMessages(ex);
+            return null;  
+        }
+    }
+    
+    /**
+    * @Description: Function called on click of Save button
+    * @Parameter: None
+    * @Return: PageReference
+    * @USage: 
+    **/
+    public PageReference quicksave() {
+        PageReference retPr;
+        try{
+            update oli;
+            if(CheckESA){
+                update PM;
+                retPr = new PageReference('/apex/AP_EI_DeemedCustomOLI_Detail?Id='+PM.Id);
+            }
+            else{
+                retPr = new PageReference('/apex/AP_EI_DeemedCustomOLI_Detail?Id='+oli.Id);
+                retPr.setRedirect(true);
+            }
+        }catch(Exception ex){
+            EI_CreateErrorLog.upsertException(EI_CreateErrorLog.logException('AP_EI_DeemedCustomOLIEditCntrl', ex));
+            ApexPages.addMessages(ex);
+            return null;  
+        }    
+        return retPr;
+    }
+    
+    /**
+    * @Description: Function called on click of Cancel button
+    * @Parameter: None
+    * @Return: PageReference
+    * @USage: 
+    **/
+    public PageReference quickcancel(){
+        PageReference retPr = new PageReference('/apex/AP_EI_DeemedCustomOLI_Detail?Id='+oli.Id);
+        retPr.setRedirect(true);
+        return retPr;
+    }
+
+}
