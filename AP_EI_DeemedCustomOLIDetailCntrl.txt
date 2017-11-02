@@ -310,8 +310,7 @@ public with sharing class AP_EI_DeemedCustomOLIDetailCntrl{
             ApexPages.addMessages(ex);
             return null;  
         }    
-        PageReference retPr = new PageReference('/apex/AP_EI_DeemedCustomOLI_Detail?Id='+oli.Id);
-        retPr.setRedirect(true);
+        
         return retPr;
     }
     
