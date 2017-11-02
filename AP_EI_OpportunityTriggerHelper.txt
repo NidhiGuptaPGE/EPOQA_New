@@ -1,0 +1,1193 @@
+/**************************************************************************************************   
+Apex Util class Name :  AP_EI_OpportunityTriggerHelper
+Version              :  1.0                                                                          
+Created Date         :  7/7/2016                                                         
+Function             :  Process Opportunity Records. 
+Story                :  STY-00906                                                                             
+Work Task            :  TSK-00528                                                                     
+Modification Log     :                                                                               
+*--------------------------------------------------------------------------------------------------  
+* Developer            Date                   Description                                     
+* -------------------------------------------------------------------------------------------------  
+* Naveen K Udatha      7/7/2016               Created.
+* Naveen K Udatha      7/18/2016              First Iteration.
+* Sagar M              3/2/2016               Second Iteration.
+* Nikhil Kapoor        8/12/2016              Third Iteration.
+* Naveen K Udatha      9/21/2016              Fourth Iteration.
+* Oksana Master        3/24/2017              Case 14130. added setWaterSavingsProjectStatus
+* Supriya Sunki        4/5/2017               Case 17578, avoid attachment validation for external users only 
+*PraveenKumar Subramaniam      04/05/2017             Case 16957, Add Payee field to Partner Program Eligibility
+*PraveenKumar Subramaniam      12/05/2017             Case 18971, Update logic for SBD DT calculation
+***************************************************************************************************/
+
+public with sharing class AP_EI_OpportunityTriggerHelper {
+    
+    
+    // Variables Declaration
+    public static Boolean isBulkUpload = false;
+    public static Boolean isSingleEntryWizard = false;
+    public static Boolean isTradeProWizard = false;
+    public static Boolean isValidationJob = false;
+    public static Boolean isLeadConversion = false;
+    public static Boolean stopRecursion = true;
+    public static Set<String> projectMeasureStatusSet = new Set<String>{'Post Install Review Passed', 'Rejected', 'Withdrawn'};
+    public static Set<String> excludeMatchingLogicStatusSet = new Set<String>{'Rejected', 'Withdrawn'};
+    public static Set<String> progSuppType = new Set<String>{'Distributor Program', '3P', 'GP'};
+    public static Set<String> progProcessWF = new Set<String>{'Deemed', 'Custom Lite'};
+    public static final Set<String> recordtypesetESA = new Set<String> {'ESA A/C Tune Up', 'ESA A/C Tune Up Locked','ESA Application','ESA Large Appliance','ESA R&R','ESA R&R Locked','ESA Refrigerator Leveraging','  ESA Refrigerator Leveraging Locked','ESA Weatherization','ESA Weatherization Locked'};
+    public static final Set<String> recordTypeNameSetESA = new Set<String> { 'ESA_AC_Tune_Up','ESA_A_C_Tune_Up_Locked','PGE_ESA_Application_Parent_EI','ESA_large_Appliance','ESA_R_R','ESA_R_R_Locked','ESA_Refrigerator_Leveraging','ESA_Refrigerator_Leveraging_Locked','ESA_Weatherization','ESA_Weatherization_Locked'};
+    public static final String recordTypeESARefLev = 'ESA_Refrigerator_Leveraging';
+    public static List<Opportunity> oppList= new List<Opportunity>();
+    static List<Opportunity> oppSAIdList= new List<Opportunity>();
+    static final String ESA_REF_LEV_CUST_QUAL_REVIEW = 'Awaiting Qualification Review';
+ 
+    
+    public static User u {
+        get {
+            if(u == null) {
+                u = [SELECT Id, Profile.Name, isPortalEnabled, AccountId FROM User WHERE Id=:UserInfo.getUserId() LIMIT 1];
+            }
+            return u;
+        }
+        set;
+    }
+    
+    public static Map<Id, RecordType> rtMap {
+        get {
+            if (rtMap == null) {
+                rtMap = new Map<Id, RecordType>([SELECT Id, DeveloperName FROM RecordType WHERE sObjectType = 'Opportunity' AND IsActive = true LIMIT 50000]);
+            }
+            return rtMap;
+        }
+        set;
+    }
+ 
+    // Constant Declaration
+    public static final String PAYMENT_APPROVAL_STAGE= 'PL1 Approved';
+    public static final String OPPORTUNITY_STAGE_NAME = '7A - New - D&C';
+    public static final String CUSTOM_APP_PROCESS = 'Custom_Application_Processing_Opportunity_Layout_EI';
+    public static final String CUSTOM_THIRD_PARTY = 'Custom_3rd_Party_EI';
+    public static final String DEEMED_AP_PROCESS = 'EI_Deemed_Application_Processing_Opportunity';
+    public static final String DEEMED_DIRECT_INSTALL = 'Deemed_3P_Direct_Install';
+    public static final String CUSTOM_LITE = 'EE_Custom_Lite';
+    public static final String PRE_INSTALL_TECH_REVIEW = '7D - Pre-Install Tech Review - C';
+    public static final String PRE_INSTALL_REVIEW = '8A - Pre-Install Review - C'; 
+    public static final String POST_INSTALL_REVIEW = '8D - Post-Install Review - D&C';
+    public static final String CUSTOM_OPPTY_STAGENAME = '7B - Project Development - C';
+    public static final String DEEMED_OPPTY_STAGENAME = '7A - New - D&C';
+    public static final String ED_REVIEW = '13 - ED Review - C';
+    public static final String OPPTY_CONVERTED = '6A - Application Received - Converted';
+    public static final String SALES_OPPTY_STAGENAME = '4 - Application Development';
+    public static final String DELIMITER = ', ';
+    public static final String RUL_PROGRAM_MODEL_PS = 'Point of Sale';
+    public static final String PIR_PASSED = 'Post Install Review Passed';
+    public static final String PROJ_PROG_MODEL = 'Shipping Method';
+    public static final String SALES_OPP_RECORDTYPE = 'Sales_Opportunity_Layout_EI';
+    public static final String PROJECT_NEED_REVIEW_STATUS = 'Needs Review';
+    public static final String PROJECT_NO_DD_STATUS = 'No Double Dip Found';
+    public static final String DD_YES = 'Yes';
+    public static final String DD_NO = 'No';
+    public static final String ESA_STAGE_PAID = 'Paid';
+    public static final String SYS_STATUS_RESOLVED = 'Resolved';
+    public static final String SYS_STATUS_VALIDATED = 'Validated';
+    
+    /**
+    * @Description: Before Insert trigger handler
+    * @Parameter: List<Opportunity> opportunityList
+    * @Return: void
+    * @Usage: This method is called from Opportunity Trigger, on before insert event.
+    **/
+    public static void beforeInsertTriggerHandler(List<Opportunity> opportunityList) {
+    
+        // Variable declaration
+        List<Opportunity> singleEntryProjects = new List<Opportunity>();
+        Set<Id> programIdSet = new Set<Id>();
+        Map<Id, Id> programOwnerIdMap = new Map<Id, Id>();
+        Map<Id, EI_Program__c> programMap = new Map<Id, EI_Program__c>();
+         List<Opportunity> esaOpplst = new List<Opportunity>();
+         
+        try {
+        
+            // calling the mandatory field check logic on project.
+            if(!isValidationJob) {
+                AP_EI_MandatoryFieldValidation.validateProject(opportunityList, isBulkUpload);
+            }
+            
+            // calling the below method to verify the program access for the vendor user, 
+            // and this only executes when the records are loaded from bulk upload screen.
+            if(isBulkUpload) {
+                
+                // Calling this method to verify the program access on opportunity.
+                verifyProgramAccess(opportunityList);
+            }
+            else { 
+                if(u.isPortalEnabled) { 
+                    
+                    // Checking Opportunities created from Single Point Entry
+                    for(Opportunity proj : opportunityList) {
+                        if(!isTradeProWizard && !isLeadConversion && rtMap.get(proj.RecordTypeId).DeveloperName <> SALES_OPP_RECORDTYPE && rtMap.get(proj.RecordTypeId).DeveloperName <> 'PGE_ESA_Application_Parent_EI') {
+                            singleEntryProjects.add(proj);
+                        }
+                    }
+                    
+                    if(singleEntryProjects.size() > 0) {
+                        AP_EI_ProjectUtils.checkForSinglePointEntryUsers(singleEntryProjects, u);
+                    }
+                }
+            }
+            
+            for(Opportunity project :opportunityList) {
+               //Close Date for ESA Opportunities should not be set to System date
+               if (!(recordTypeNameSetESA.contains(rtMap.get(project.RecordTypeId).DeveloperName)))
+                  project.closeDAte= System.Today();
+                if(project.Program_EI__c != null) {
+                    programIdSet.add(project.Program_EI__c); 
+                }
+                
+                //Creating Opportunity list to update Electric or GAS SAs or Premise lookup based on SAIds
+               if( rtMap.get(project.RecordTypeId).DeveloperName == recordTypeESARefLev  && 
+               ((project.Electric_SA_ID_EI__c != '' && project.Electric_SA_ID_EI__c != null) || 
+                (project.Gas_SA_ID_EI__c != '' && project.Gas_SA_ID_EI__c != null) )){
+                   System.debug('project SAId='+ project.Electric_SA_ID_EI__c);
+                   oppSAIdList.add(project); 
+               }
+            }
+            
+            if(programIdSet.size() > 0) {
+               programMap = new Map<Id, EI_Program__c>([SELECT Id, Is_Double_Dip_Skip_Eligible_EI__c, Pgm_Code_EI__c, OwnerId FROM EI_Program__c WHERE Id IN: programIdSet LIMIT 50000]);
+            }
+            
+            //update Electric or GAS SAs or Premise lookup based on SAIds
+            if (oppSAIdList.size()>0){
+                ESAProjectUtility.PopulateElectricGasSA(oppSAIdList);
+            }
+
+            for(Opportunity projRec : opportunityList) {
+                if(projRec.Program_EI__c <> null) {
+                    if(!programOwnerIdMap.containsKey(projRec.Program_EI__c)) {
+                        programOwnerIdMap.put(projRec.Program_EI__c, programMap.get(projRec.Program_EI__c).OwnerId);
+                    }
+                }
+            }
+            
+            // Below is the common code for both bulk upload and all the other functionalities.
+            // Calling to add Program Manager on Project
+            if(!programOwnerIdMap.isEmpty()) {
+                AP_EI_ProjectUtils.addProgramManagerOnProj(opportunityList, programOwnerIdMap);
+            }
+            
+            // In case, Double Dip Skip on Program is checked, mark Double Dip Status on Opportunity = Blank
+            for(Opportunity proj : opportunityList) {
+            
+                // populate the program code on project.
+                if(proj.Program_EI__c != null && proj.Program_Code_EI__c == null) {
+                    if(programMap.containsKey(proj.Program_EI__c)) {
+                        proj.Program_Code_EI__c = programMap.get(proj.Program_EI__c).Pgm_Code_EI__c;
+                    }
+                }
+                
+                // making the double dip status as null if the double dip skip eligible on program is set.
+                if(programMap.containsKey(proj.Program_EI__c)) {
+                    if(programMap.get(proj.Program_EI__c).Is_Double_Dip_Skip_Eligible_EI__c) {
+                        proj.Double_Dip_Status_EI__c = null;
+                    }
+                }
+            }
+             
+      for(Opportunity proj : opportunityList) {
+                  
+                 if(recordTypeNameSetESA.contains(rtMap.get(proj.RecordTypeId).DeveloperName)){
+                 esaOpplst.add(proj);
+                 }
+       }
+                 if(esaOpplst.size()>0){
+                 system.debug('Before insert call'+esaOpplst);
+                 
+                 //Function to populate Sales Tax on Opportunity
+                ESAProjectUtility.populateSalesTax(esaOpplst);
+                 
+                 //Function to insert Housing Type and its corresponding Building type 
+                 ESAProjectUtility.insertHousingBuildingTypeChildWF(esaOpplst);
+
+                  }
+          }//try close
+        catch(Exception e) {
+            EI_CreateErrorLog.upsertException(EI_CreateErrorLog.logException('AP_EI_OpportunityTriggerHelper', e));
+        }
+    }
+    
+    /**
+    * @Description: Before Update Trigger Handler
+    * @Parameter: Map<Id, Opportunity> newMap, Map<Id, Opportunity> oldMap
+    * @Return: void
+    * @Usage: This method is called from Opportunity Trigger, on before update event.
+    **/   
+    public static void beforeUpdateTriggerHandler(Map<Id, Opportunity> newMap, Map<Id, Opportunity> oldMap) {
+        
+         // local variable declaration
+         Set<Id> programIdSet = new Set<Id>();
+         Set<Id> passedProjIdSet = new Set<Id>();
+         List<Id> oppDDIdList = new List<Id>();
+         List<Opportunity> rollist = new List<Opportunity>(); 
+         List<Opportunity> checkForVPEList = new List<Opportunity>();
+         List<Opportunity> progManagerOnProj = new List<Opportunity>();
+         Map<Id, Id> programOwnerIdMap = new Map<Id, Id>();
+         Map<Id, EI_Program__c> programMap = new Map<Id, EI_Program__c>();
+         Map<Id, Opportunity> oppattachCheckMap = new Map<Id, Opportunity>();
+         Map<Id, Opportunity> pirOppIdMap = new Map<Id, Opportunity>();
+         Map<Id, List<OpportunityLineItem>> passedProjPMMap = new Map<Id, List<OpportunityLineItem>>();
+         Map<id,opportunity> ESAMap1=new Map<id,opportunity>();
+         Map<id,opportunity> ESAMap2=new Map<id,opportunity>();
+        
+        
+         try {
+             for(Opportunity opp :newMap.values()) { 
+                 if(opp.Program_EI__c <> null) {
+                     programIdSet.add(opp.Program_EI__c);
+                 }
+             }
+             
+             if(!programIdSet.isEmpty()) {
+                 programMap = new Map<Id, EI_Program__c>([SELECT Id, Processing_Workflow_EI__c, Supported_Partner_Type_EI__c, Pgm_Code_EI__c,OwnerId FROM EI_Program__c WHERE Id IN: programIdSet LIMIT 50000]);
+             }
+             
+             if(!isValidationJob ) { // skip this mandatory check for validation job - added by naveen 
+                 // Executing Mandatory check on before update
+                 AP_EI_MandatoryFieldValidation.validateProject(newMap.values(), isBulkUpload);  
+             }
+            
+             // Capturing Opportunitites based on Record type for Deemed / Custom flow
+             for(Opportunity opp : newMap.values()) {
+                
+                if(opp.Program_EI__c != null) {
+                    if(!programOwnerIdMap.containsKey(opp.Program_EI__c)) {
+                        programOwnerIdMap.put(opp.Program_EI__c, programMap.get(opp.Program_EI__c).OwnerId);
+                    }
+                }
+                
+                // populating the udpated program code onto the opportunity if program is changed.
+                if(opp.Program_EI__c != oldMap.get(opp.id).Program_EI__c && opp.Program_EI__c != null) {
+                    if(programMap.containsKey(opp.Program_EI__c)) {
+                        opp.Program_Code_EI__c = programMap.get(opp.Program_EI__c).Pgm_Code_EI__c;
+                    }
+                }
+                
+                if(opp.Program_EI__c != oldMap.get(opp.id).Program_EI__c && opp.Program_EI__c != null && u.isPortalEnabled) {
+                    checkForVPEList.add(newMap.get(opp.Id));
+                }
+                
+                if(opp.E_IM_Data_Entry_Complete_EI__c != oldMap.get(opp.id).E_IM_Data_Entry_Complete_EI__c && opp.E_IM_Data_Entry_Complete_EI__c == true && (opp.Program_Model_EI__c == PROJ_PROG_MODEL || (opp.Program_EI__c != null ? programMap.get(opp.Program_EI__c).Supported_Partner_Type_EI__c == 'Trade Pros' : false))) {
+                   rollist.add(opp); 
+                }
+                
+                //S5SJ- Case 17578 - Added the flag u.isPortalEnabled == false to make attachment validation for Internal users only
+                if(rtMap.get(opp.RecordTypeId).DeveloperName == SALES_OPP_RECORDTYPE && oldMap.get(opp.Id).StageName != opp.StageName && opp.StageName == OPPTY_CONVERTED && u.isPortalEnabled == false) {
+                    oppattachCheckMap.put(opp.id, opp);
+                }
+                
+                if(opp.Post_Install_Review_Complete_EI__c != oldMap.get(opp.Id).Post_Install_Review_Complete_EI__c && opp.Post_Install_Review_Complete_EI__c == true) {
+                    pirOppIdMap.put(opp.Id, opp);
+                }
+                
+                // When Opportunity is converted to Project
+                if(opp.StageName == OPPTY_CONVERTED && oldMap.get(opp.Id).StageName == SALES_OPPTY_STAGENAME) {
+                    progManagerOnProj.add(opp); 
+                }
+                
+                if (((opp.E_IM_Data_Entry_Complete_EI__c != oldMap.get(opp.Id).E_IM_Data_Entry_Complete_EI__c && opp.E_IM_Data_Entry_Complete_EI__c == true) ||
+                   (opp.System_Validation_Status_EI__c != oldMap.get(opp.Id).System_Validation_Status_EI__c && opp.System_Validation_Status_EI__c == SYS_STATUS_RESOLVED ))
+                   && recordTypeNameSetESA.contains(rtMap.get(opp.RecordTypeId).DeveloperName)){
+                        system.debug('M inside if ESAMap1');
+                    ESAMap1.put(opp.id,opp);
+                }
+                
+                if (((opp.System_Validation_Status_EI__c != oldMap.get(opp.Id).System_Validation_Status_EI__c && opp.System_Validation_Status_EI__c == SYS_STATUS_VALIDATED ))
+                && recordTypeNameSetESA.contains(rtMap.get(opp.RecordTypeId).DeveloperName)){
+                        system.debug('M inside if ESAMap2');
+                    ESAMap2.put(opp.id,opp);
+                }
+                 //Creating Opportunity list with stage name as paid
+               if(opp.StageName != oldMap.get(opp.id).StageName && opp.StageName == ESA_STAGE_PAID
+               && recordTypeNameSetESA.contains(rtMap.get(opp.RecordTypeId).DeveloperName)){
+                  oppList.add(opp); 
+               }
+               
+               //Creating Opportunity list to update Electric or GAS SAs or Premise lookup based on SAIds
+               if( rtMap.get(opp.RecordTypeId).DeveloperName == recordTypeESARefLev  && 
+               ((opp.Electric_SA_ID_EI__c!= oldMap.get(opp.id).Electric_SA_ID_EI__c && (opp.Electric_SA_ID_EI__c != '' && opp.Electric_SA_ID_EI__c != null)) || 
+                (opp.Gas_SA_ID_EI__c!= oldMap.get(opp.id).Gas_SA_ID_EI__c && (opp.Gas_SA_ID_EI__c != '' && opp.Gas_SA_ID_EI__c != null) ))){
+                   oppSAIdList.add(opp); 
+               }
+
+               
+
+            }
+            
+            // If the logged in user is a partner user and if it is a sales opportunity then do a check for VPE, if the user is populating/changing the program.
+            if(checkForVPEList.size()>0) {
+                AP_EI_ProjectUtils.checkForSinglePointEntryUsers(checkForVPEList, u);
+            }
+            
+            // Until all PM's have a status on Project Measure Status - PIR Review Passed, Rejected, Withdrawn - do not let the project be saved with post-install review complete checkbox checked.
+            if(!pirOppIdMap.isEmpty()) {   
+                validatePostInstallReview(pirOppIdMap); 
+            }
+            
+            // Calling the below method to check whether there exists an attachment on the opportunity for RUL and TradePro Program.
+            if(rollist.size()>0) {
+               //Passing Program Map as a parameter in order to avoid extra Query on Program in the called method
+               AP_EI_ProjectUtils.CheckAttachmentForRul(rollist,programMap); 
+            }
+            
+            // In case Project record type is Sales Opportunity and Stage changed to '6A - Application Received - Converted'
+            if(oppattachCheckMap.size() > 0) {
+                AP_EI_ProjectUtils.checkSalesOppAttachment(oppattachCheckMap);
+            }
+            
+            // In case Opportunity is converted to Project, add Program Manager to Project
+            if(progManagerOnProj.size() > 0) {
+                AP_EI_ProjectUtils.addProgramManagerOnProj(progManagerOnProj, programOwnerIdMap);
+            }
+
+            // Check for Project Team security feature for all Projects -- START (STY-00932)
+            AP_EI_ProjectSecurityClass.checkProjectTeamRole(oldMap, newMap);
+            // Check for Project Team security feature for all Projects -- END (STY-00932)
+            
+            //update Electric or GAS SAs or Premise lookup based on SAIds
+            if (oppSAIdList.size()>0){
+                ESAProjectUtility.PopulateElectricGasSA(oppSAIdList);
+            }
+            set<id> opptyidset=new set<id>();
+            list<OpportunityLineItem> updateoptyLine=new list<OpportunityLineItem>();
+            map<id,list<OpportunityLineItem>> optyoptylineMap=new map<id,list<OpportunityLineItem>>();
+            Map<Id, Opportunity> opportunityMap=new Map<Id, Opportunity>();
+            List<OpportunityLineItem> oliList=new List<OpportunityLineItem>();
+            
+            if(ESAMap1.size()>0){
+                ESACache.setESAOptyCache(ESAMap1);
+                ESAProjectUtility.ESADetermineMeasureSavings(ESACache.getESAOptyMap(),ESACache.getESAOptyLineItemMap().values());
+                System.debug('After ESA Measure Util Call : ' + ESACache.getESAOptyLineItemMap().values());
+                for(Opportunity opp: newMap.values()){
+                   if (newMap.get(opp.id).System_Validation_Status_EI__c=='Validated')
+                   ESAMap2.put(opp.id,opp);
+                }
+            }
+            if(ESAMap2.size()>0){
+               ESACache.setESAOptyCache(ESAMap2);  
+               ESAProjectUtility.ESAReviewCapping(ESACache.getESAOptyMap(),ESACache.getESAOptyLineItemMap().values());
+               ESAProjectUtility.ESADetermineDoubleDip (ESACache.getESAOptyMap(),ESACache.getESAOptyLineItemMap().values());
+            }
+             
+         
+ //Deepika Added 8/7/2017
+ 
+  if(oppList.size()>0){
+  //Calling function to update Retreatment Classification on Parent Opportunity
+               ESAProjectUtility.updateRetreamentClassification3(oppList) ;
+     }
+     oppList.clear();
+// List<Opportunity> opplst = new List<Opportunity>();
+for(Opportunity opp : newMap.Values())
+{
+if(recordTypeNameSetESA.contains(rtMap.get(opp.RecordTypeId).DeveloperName))
+oppList.add(opp);
+}
+if(oppList.size()>0)
+{
+//Function to add Opportunity Team Member
+ESAProjectUtility.insertOppTeamMember(oppList);
+
+//Function to add Vintage Year and Property Occupied By from Parent to child opportunity
+ESAProjectUtility.getParentFieldsChildWF(oldMap,newMap) ;
+
+//Function to update Building Type on Parent and Child Opty based on the Housing Type
+ESAProjectUtility.updateHousingBuildingTypeChildWF(oppList);
+
+//Function to populate Sales Tax on Opportunity
+ESAProjectUtility.populateSalesTax(oppList);
+
+}//if Close
+}//try Close
+        
+        catch(Exception e) {
+            EI_CreateErrorLog.upsertException(EI_CreateErrorLog.logException('AP_EI_OpportunityTriggerHelper', e));
+            
+        }
+    }
+     
+    /**
+    * @Description: After Update Trigger Handler
+    * @Parameter: Map<Id, Opportunity> newMap, Map<Id, Opportunity> oldMap
+    * @Return: void
+    * @Usage: This method is called from Opportunity Trigger, on before update event. It contains multiple functionalities with start and end comments.
+    **/ 
+    public static void afterUpdateTriggerHandler(Map<Id, Opportunity> newMap, Map<Id, Opportunity> oldMap) {
+        
+        Set<Id> opptyIdForKickerSet = new Set<Id>();
+        Set<Id> chIncentiveOppIdSet = new Set<Id>();
+        Set<Id> oppDDIdSet = new Set<Id>();
+        Set<Id> passedProjIdSet = new Set<Id>();
+        Set<String> kickerDeemedSet = new Set<String>{DEEMED_AP_PROCESS, DEEMED_DIRECT_INSTALL, CUSTOM_LITE, 'Deemed_Project_Locked'};
+        Set<String> kickerCustomSet = new Set<String>{CUSTOM_APP_PROCESS, CUSTOM_THIRD_PARTY, 'Custom_Project_Locked'};
+        Set<String> chpCustomSet = new Set<String>{CUSTOM_APP_PROCESS, CUSTOM_THIRD_PARTY, 'Custom_Project_Locked'};
+        List<Opportunity> progManagerAsOTM = new List<Opportunity>();
+        List<Opportunity> approvalProcessList = new List<Opportunity>();
+        List<Opportunity> customCappingList = new List<Opportunity>();
+        List<OpportunityLineItem> ddEntryList = new List<OpportunityLineItem>();
+        List<OpportunityLineItem> ddList = new List<OpportunityLineItem>();
+        List<OpportunityLineItem> cahpFinalList = new List<OpportunityLineItem>(); 
+        List<OpportunityLineItem> updateOLIList = new List<OpportunityLineItem>();
+        List<Opportunity> updateOpportunityList = new List<Opportunity>();
+        Map<Id, Opportunity> cascadeBuildingTypeAndVintageMap = new Map<Id, Opportunity>();
+        Map<Id, Opportunity> commercialOpptyMap = new Map<Id, Opportunity>();
+        Map<Id, Opportunity> cahpOppMap = new Map<Id, Opportunity>();
+        Map<Id, List<OpportunityLineItem>> passedProjPMMap = new Map<Id, List<OpportunityLineItem>>();
+        Map<Id, Opportunity> oppMap = new Map<Id, Opportunity>();
+        Map<Id, OpportunityLineItem> oliUpdateMap = new Map<Id, OpportunityLineItem>();
+        
+        Map<id,opportunity> ESAMap1=new Map<id,opportunity>();
+        Map<id,opportunity> ESAMap2=new Map<id,opportunity>();
+        try {
+            
+            oppMap = new Map<Id, Opportunity>([SELECT Id, StageName, Double_Dip_Status_EI__c, Post_Install_Review_Complete_EI__c,
+                                            Trade_Pro_EI__c, F_Savings_By_Design_EI__c, Site_Building_Type_EI__c, 
+                                            Site_Vintage_Year_EI__c, Program_EI__r.Pgm_Code_EI__c, Program_EI__r.Processing_Workflow_EI__c, Program_EI__r.Supported_Partner_Type_EI__c,Program_EI__r.Is_Double_Dip_Skip_Eligible_EI__c, 
+                                            Project_Measure_Split_EI__c, AccountId, Project_Validated_EI__c, 
+                                            System_Validation_Status_EI__c, Application_Received_Date_EI__c, 
+                                            Program_EI__r.F_Mkt_Sectr_EI__c, Program_EI__r.Del_Typ_CEEDARS_EI__c, 
+                                            Payment_Approval_Stage_EI__c FROM Opportunity WHERE ID IN: newMap.keySet() LIMIT 50000]);
+               
+            for(Opportunity opp :newMap.values()) {
+            
+                // Added for Sagar,It will create the Program manager for Project which is converted from Lead
+                if(oldMap.get(opp.Id).StageName!=opp.StageName && opp.StageName == OPPTY_CONVERTED ) {
+                    progManagerAsOTM.add(opp); 
+                }
+                
+                if(opp.Payment_Approval_Stage_EI__c != oldmap.get(opp.id).Payment_Approval_Stage_EI__c && opp.Payment_Approval_Stage_EI__c == PAYMENT_APPROVAL_STAGE && opp.Project_App_for_Pmt_EI__c == 'Yes' && opp.StageName =='14 - Pending Approval' && opp.R_Total_Inc_Amount_EI__c >= 100000) {
+                    approvalProcessList.add(opp);      
+                }
+                
+                if(opp.StageName != oldMap.get(opp.id).StageName && ((oldMap.get(opp.id).StageName == POST_INSTALL_REVIEW && opp.StageName == '14 - Pending Approval') || (oldMap.get(opp.id).StageName == PRE_INSTALL_REVIEW && (opp.StageName == '13 - ED Review - C' || opp.StageName == '8B - Installation - C')))) {
+                    customCappingList.add(opp); 
+                }
+                
+                if(isSingleEntryWizard) {
+                    if(opp.Site_Building_Type_EI__c != oldMap.get(opp.Id).Site_Building_Type_EI__c || opp.Site_Vintage_Year_EI__c != oldMap.get(opp.Id).Site_Vintage_Year_EI__c) {
+                        cascadeBuildingTypeAndVintageMap.put(opp.Id, opp);
+                    }
+                }
+                
+                /*if(Test.isRunningTest()){
+                  cascadeBuildingTypeAndVintageMap.put(opp.Id, opp);   
+                }*/
+                
+                if(opp.Post_Install_Review_Complete_EI__c != oldMap.get(opp.Id).Post_Install_Review_Complete_EI__c && opp.Post_Install_Review_Complete_EI__c == true && opp.StageName == POST_INSTALL_REVIEW && opp.System_Validation_Status_EI__c == 'Validated' && kickerDeemedSet.contains(rtMap.get(opp.recordTypeId).DeveloperName)) {
+                    opptyIdForKickerSet.add(opp.Id);
+                }
+                
+                if((opp.StageName != oldMap.get(opp.Id).StageName) && ((oldMap.get(opp.Id).StageName == PRE_INSTALL_TECH_REVIEW  && opp.StageName == PRE_INSTALL_REVIEW) || (oldMap.get(opp.Id).StageName == ED_REVIEW  && opp.StageName == PRE_INSTALL_REVIEW)) && opp.System_Validation_Status_EI__c == 'Validated' && kickerCustomSet.contains(rtMap.get(opp.recordTypeId).DeveloperName)) {
+                    opptyIdForKickerSet.add(opp.Id);
+                } 
+                
+                if((opp.StageName != oldMap.get(opp.Id).StageName) && ((oldMap.get(opp.Id).StageName == PRE_INSTALL_TECH_REVIEW || oldMap.get(opp.Id).StageName == ED_REVIEW) && opp.StageName == PRE_INSTALL_REVIEW) && chpCustomSet.contains(rtMap.get(opp.recordTypeId).DeveloperName) && opp.F_Savings_By_Design_EI__c) {
+                      
+                    chIncentiveOppIdSet.add(opp.Id);
+                }
+                
+                if((opp.StageName != oldMap.get(opp.Id).StageName && opp.StageName == POST_INSTALL_REVIEW && opp.Project_Validated_EI__c == true && opp.Project_Measure_Split_EI__c != true &&
+                     oppMap.get(opp.Id).Program_EI__r.Pgm_Code_EI__c != null && !''.equals(oppMap.get(opp.Id).Program_EI__r.Pgm_Code_EI__c)) || (opp.Project_Validated_EI__c != oldMap.get(opp.Id).Project_Validated_EI__c && opp.Project_Validated_EI__c == true && opp.StageName == POST_INSTALL_REVIEW && opp.Project_Measure_Split_EI__c != true &&
+                     oppMap.get(opp.Id).Program_EI__r.Pgm_Code_EI__c != null && !''.equals(oppMap.get(opp.Id).Program_EI__r.Pgm_Code_EI__c))) {
+                     commercialOpptyMap.put(opp.Id, oppMap.get(opp.Id));
+                }
+                
+                if((opp.StageName == POST_INSTALL_REVIEW && opp.System_Validation_Status_EI__c != oldMap.get(opp.Id).System_Validation_Status_EI__c && opp.System_Validation_Status_EI__c == 'Validated' && (rtMap.get(opp.RecordTypeId).DeveloperName == DEEMED_AP_PROCESS || rtMap.get(opp.RecordTypeId).DeveloperName == DEEMED_DIRECT_INSTALL || rtMap.get(opp.RecordTypeId).DeveloperName == CUSTOM_LITE || rtMap.get(opp.RecordTypeId).DeveloperName == 'Custom_Lite_Project_Locked')) ||
+                   (opp.StageName != oldMap.get(opp.Id).StageName && opp.StageName == POST_INSTALL_REVIEW && opp.System_Validation_Status_EI__c == 'Validated' && (rtMap.get(opp.RecordTypeId).DeveloperName == DEEMED_AP_PROCESS || rtMap.get(opp.RecordTypeId).DeveloperName == DEEMED_DIRECT_INSTALL || rtMap.get(opp.RecordTypeId).DeveloperName == CUSTOM_LITE || rtMap.get(opp.RecordTypeId).DeveloperName == 'Custom_Lite_Project_Locked')) ||
+                   ((rtMap.get(opp.RecordTypeId).DeveloperName == CUSTOM_APP_PROCESS || rtMap.get(opp.RecordTypeId).DeveloperName == CUSTOM_THIRD_PARTY || rtMap.get(opp.RecordTypeId).DeveloperName == 'Custom_Project_Locked') && ((opp.StageName == '7C - QC Review - C' && oldMap.get(opp.Id).StageName == '7B - Project Development - C') || (opp.StageName == POST_INSTALL_REVIEW && (oldMap.get(opp.Id).StageName == '8E - Post Install Tech Review' || oldMap.get(opp.Id).StageName == '13B - ED Post-Review - C'))))) {  
+                    oppDDIdSet.add(opp.Id);
+                }
+                
+                if(rtMap.get(opp.RecordTypeId).DeveloperName == recordTypeESARefLev  && 
+                   oldMap.get(opp.Id).StageName!=opp.StageName && opp.StageName == ESA_REF_LEV_CUST_QUAL_REVIEW ) {
+                    progManagerAsOTM.add(opp); 
+                    System.debug('progManagerAsOTM=' + progManagerAsOTM);
+                }
+
+
+            }
+            
+            
+
+          
+            
+            /** Adding Program Manager to Opportunity- START**/
+            if(progManagerAsOTM.size() > 0) {
+                AP_EI_ProjectUtils.addProgramManagerAsOTM(progManagerAsOTM);
+            }
+            /** Adding Program Manager to Opportunity- END**/
+            
+            /** Custom Capping - START **/ 
+            if(customCappinglist.size()>0) {
+                // iterate through the custom capping returned record to add them to a map to perform a consolidated DML.
+                for(OpportunityLineItem oli : AP_EI_ProjectUtils.customCapping(customCappingList)) {
+                    if(oliUpdateMap.containsKey(oli.Id)) {
+                        oliUpdateMap.get(oli.Id).ERC_EI__c = oli.ERC_EI__c;
+                        oliUpdateMap.get(oli.Id).Project_Measure_Cap_EI__c  = oli.Project_Measure_Cap_EI__c;
+                    } else {
+                        oliUpdateMap.put(oli.Id, oli);
+                    }
+                }
+            }
+            /** Custom Capping - END **/    
+            
+            /** Cascade Site BuildingType And Site Vintage to Project Measure - START **/
+            if(!cascadeBuildingTypeAndVintageMap.isEmpty()) {
+                // iterate through the cascade BT & VC records to add them to a map to perform a consolidated DML.
+                for(OpportunityLineItem oli : cascadeChangesToProjectMeasure(cascadeBuildingTypeAndVintageMap)) {
+                    if(oliUpdateMap.containsKey(oli.Id)) {
+                        oliUpdateMap.get(oli.Id).Site_Bldg_Type_EI__c = oli.Site_Bldg_Type_EI__c;
+                        oliUpdateMap.get(oli.Id).Site_Vintage_Year_EI__c = oli.Site_Vintage_Year_EI__c;
+                    } else {
+                        oliUpdateMap.put(oli.Id, oli);
+                    }
+                }
+            }
+            /** Cascade Site BuildingType And Site Vintage to Project Measure - END **/
+            /** SBD - START **/           
+            if(chIncentiveOppIdSet.size() > 0) {          
+
+                for(OpportunityLineItem oli: sBDIncentiveCalc(chIncentiveOppIdSet)) {
+                
+                    if(oliUpdateMap.containsKey(oli.Id)) {
+                        oliUpdateMap.get(oli.Id).Provided_Incentive_EI__c= oli.Provided_Incentive_EI__c;
+                    } else {
+                        oliUpdateMap.put(oli.Id, oli);
+                    }
+                }                
+            }
+            /** SBD - END **/
+                   
+            /** Kickers - START **/   
+            if(opptyIdForKickerSet.size()>0) {
+                // iterate through the kicker returned records to add them to a map to perform a consolidated DML.
+                for(OpportunityLineItem oli : AP_EI_KickerUtils.upsertKickerRecords(opptyIdForKickerSet)) {
+                    if(oliUpdateMap.containsKey(oli.Id)) {
+                        oliUpdateMap.get(oli.Id).Kicker_EI__c = oli.Kicker_EI__c;
+                    } else {
+                        oliUpdateMap.put(oli.Id, oli);
+                    }
+                } 
+            }
+            /** Kickers - END **/ 
+            
+            // updating the opportunity line items
+            if(!oliUpdateMap.isEmpty()) {
+                update oliUpdateMap.values();
+            }
+            
+            /** RUL - START **/
+            if(!commercialOpptyMap.isEmpty()) {
+                AP_EI_RUL_ProjMeasureTriggerHelper.createCommercialProjMeasureRecords(commercialOpptyMap);
+            }
+            /** RUL - END **/
+            
+            /** DD and CAHP - START **/
+            if(!oppDDIdSet.isEmpty()) {
+                ddEntryList = [SELECT Id, Reviewer_Adjustment_EI__c, Project_Measure_Status_EI__c, OpportunityId, Site_Service_Agreement_EI__c, Site_Service_Agreement_EI__r.Site_Premise_ID_EI__c, Product2Id, Double_Dip_Status_EI__c, CAHP_Score_EI__c, CAHP_Adjuster_EI__c FROM OpportunityLineItem WHERE OpportunityId IN: oppDDIdSet AND Double_Dip_Status_EI__c = NULL];
+            }
+            
+            if(ddEntryList.size() > 0) {
+                ddList = AP_EI_DoubleDip.executeDoubleDip(ddEntryList);
+            }
+            
+            // CAHP Validation here.
+            if(ddList.size() > 0) {
+                cahpFinalList = AP_EI_CAHPAdjuster.cahpValidation(ddList);
+            }
+           
+            if(cahpFinalList.size() > 0) {
+                update cahpFinalList;
+            }
+            
+            Opportunity opty = null;
+            for(OpportunityLineItem projM : cahpFinalList) {
+                // For Project Measures where Double Dip Status = Yes, marking Double Dip Status at header level as 'Needs Review'
+                if(projM.Double_Dip_Status_EI__c == DD_YES) {
+                    if(newMap.containsKey(projM.OpportunityId)) {
+                        if(newMap.get(projM.OpportunityId).Double_Dip_Status_EI__c != PROJECT_NEED_REVIEW_STATUS) {
+                            opty = oppMap.get(projM.OpportunityId);
+                            opty.Double_Dip_Status_EI__c = PROJECT_NEED_REVIEW_STATUS;
+                            cahpOppMap.put(projM.OpportunityId, opty);
+                        }
+                    }
+                }
+                
+                // For Project Measures where Double Dip Status = Null OR NO
+                else{
+                    passedProjIdSet.add(projM.OpportunityId);
+                }
+            }
+            
+            // Quering all Project Measures
+            if(!passedProjIdSet.isEmpty()) {
+                for(OpportunityLineItem pM : [SELECT Id, OpportunityId, Project_Measure_Status_EI__c, Double_Dip_Status_EI__c FROM OpportunityLineItem WHERE OpportunityId IN: passedProjIdSet]) {
+                    if(!passedProjPMMap.containsKey(pM.OpportunityId)){
+                        passedProjPMMap.put(pM.OpportunityId, new List<OpportunityLineItem>{pM});
+                    }
+                    else {
+                        passedProjPMMap.get(pM.OpportunityId).add(pM);
+                    }
+                }
+            }
+            
+            // fetching all Project Measures and checking condition
+            Boolean allPMsPassed = false;
+            Boolean noDD = false;
+            for(Id projId : passedProjPMMap.keySet()) {
+                allPMsPassed = true;
+                for(OpportunityLineItem oli : passedProjPMMap.get(projId)) {
+                    if(!(oli.Project_Measure_Status_EI__c == PIR_PASSED && (oli.Double_Dip_Status_EI__c == DD_NO || oli.Double_Dip_Status_EI__c == Null))) {
+                        allPMsPassed = false;
+                        break;         
+                    }
+                }
+                for(OpportunityLineItem oli : passedProjPMMap.get(projId)){
+                    noDD = true;
+                    if(!(oli.Double_Dip_Status_EI__c == DD_NO)){
+                        noDD = false;
+                        break;
+                    }
+                }
+                //update Double dip status at header level
+                if(noDD){
+                    if(cahpOppMap.containsKey(projId)){
+                       cahpOppMap.get(projId).Double_Dip_Status_EI__c = PROJECT_NO_DD_STATUS; 
+                    }
+                    else{
+                       opty = oppMap.get(projId);
+                       opty.Double_Dip_Status_EI__c = PROJECT_NO_DD_STATUS;
+                       cahpOppMap.put(projId, opty);
+                    }
+                }
+                
+                // Update Project if all Project Measures satisfy criteria
+                if(allPMsPassed) {
+                    if(cahpOppMap.containsKey(projId)) {
+                        if(cahpOppMap.get(projId).Program_Model_EI__c != 'Shipping Method') {
+                            cahpOppMap.get(projId).Post_Install_Review_Complete_EI__c = true;
+                            cahpOppMap.get(projId).Payee_Confirmation_EI__c = true;
+                        }
+                    }
+                    else {
+                       if(!(newMap.get(projId).Program_Model_EI__c == 'Shipping Method')) {  
+                            opty = oppMap.get(projId);
+                            opty.Post_Install_Review_Complete_EI__c = true;
+                            opty.Payee_Confirmation_EI__c = true;
+                            cahpOppMap.put(projId, opty);
+                        }
+                    }
+                }
+            }
+            
+            if(!cahpOppMap.isEmpty()) {
+                update cahpOppMap.values();
+            }
+            /** DD and CAHP - END **/
+            
+            /** Calling Approval Process - START **/
+            if(approvalProcessList.size()>0) {
+                AP_EI_ProjectUtils.approvalProcessFire(approvalProcessList);
+            }
+            /** End of Approval Process - END **/
+            
+            /** OBF - START **/
+            system.debug ('@@BXNE....in OBF start');
+
+            OBF_EcologyProjectHelper.AfterInsertEcologyProjectEventHandler(oldMap.values(), newMap.values(), oldMap); 
+            /** OBF - END **/
+            
+            
+            if (ESACache.getESAOptyLineItemMap().size()>0){
+                Database.SaveResult[] projectMeasureSaveresults = Database.update(ESACache.getESAOptyLineItemMap().values(),false);
+                Map<Id,Opportunity> OptyErrorUpdateMap = New Map<Id,Opportunity>();
+                Map<Id,Opportunity> OptyMap= New Map<Id,Opportunity>();
+                Map<Id,OpportunityLineItem> OptyLineItemMap = New Map<Id,OpportunityLineItem>();
+                Opportunity tempOpty = New Opportunity();
+             
+                OptyMap = ESACAche.getESAOptyMap();
+                OptyLineItemMap= ESACAche.getESAOptyLineItemMap();
+
+                for(integer i = 0; i<projectMeasureSaveresults.size(); i++) {
+                  if(!projectMeasureSaveresults[i].isSuccess()) {
+                      tempOpty = OptyMap.get(OptyLineItemMap.get(projectMeasureSaveresults[i].getId()).OpportunityId);
+                      if (OptyErrorUpdateMap.get(tempOpty.Id) == null ){
+                        tempOpty.EI_Error_Summary__c = projectMeasureSaveresults[i].getId() + ' - ' + projectMeasureSaveresults[i].getErrors();
+                        OptyErrorUpdateMap.put(tempOpty.Id, tempOpty);
+                       } else
+                        tempOpty.EI_Error_Summary__c = tempOpty.EI_Error_Summary__c  +  ' , '+ projectMeasureSaveresults[i].getId() + ' - ' + projectMeasureSaveresults[i].getErrors();
+                       }
+                 }
+                if(OptyErrorUpdateMap.size()>0) update  OptyErrorUpdateMap.values() ;  
+               
+            }   
+        }
+        catch(Exception e) {
+            EI_CreateErrorLog.upsertException(EI_CreateErrorLog.logException('AP_EI_OpportunityTriggerHelper', e));
+        }
+    }
+    
+    
+    /**
+    * @Description: Before Delete Trigger Handler
+    * @Parameter: Map<Id, Opportunity> oldMap
+    * @Return: void
+    * @Usage: This method is called from Opportunity Trigger, on before delete.
+    **/ 
+    
+    public static void beforeDeleteTriggerHandler(Map<Id, Opportunity> oldMap) {
+        
+        // Allow deletion only for System Administrator profile -- START (STY-00933)
+        AP_EI_ProjectUtils.checkDeletionForSysAdmin(oldMap);
+        // Allow deletion only for System Administrator profile -- END (STY-00933)
+    }
+    
+    
+    /**
+    * @Description: Checks the status of Project Measure before the post install review complete check box on project is checked. 
+    * @Parameter: Map<Id, Opportunity> pirOppIdMap
+    * @Return: void
+    * @Usage: Throws an error if any one of the project measures have status apart from PIR Review Passed, Rejected, Withdrawn
+    **/
+    private static void validatePostInstallReview(Map<Id, Opportunity> pirOppIdMap) {
+        try {
+            for(AggregateResult ar: [SELECT COUNT(ID)cnt, OpportunityId FROM OpportunityLineItem WHERE Project_Measure_Status_EI__c NOT IN:projectMeasureStatusSet AND OpportunityId IN:pirOppIdMap.keySet() GROUP BY OpportunityId]) {
+                if(Integer.valueOf(ar.get('cnt')) > 0) {
+                    pirOppIdMap.get(String.valueOf(ar.get('OpportunityId'))).addError(System.Label.AP_EI_ProjectMeasureStatusError);
+                }
+            }
+        } catch(Exception e) {
+            EI_CreateErrorLog.upsertException(EI_CreateErrorLog.logException('AP_EI_OpportunityTriggerHelper', e));
+        }
+    }
+    
+    
+    /**
+    * @Description: Method to set Project status after Validation Job and CV logic are complete
+    * @Parameter: Set<Id> projectIdSet
+    * @Return: List<Opportunity>
+    * @Usage: Sets Project status after Validation Job and CV logic are complete
+    **/
+    public static List<Opportunity> setProjectStatus(Set<Id> projectIdSet) {
+        
+        // Variable declaration
+        Map<Id, Boolean> parentMap = new Map<Id, Boolean>();
+        List<opportunity> opportunityList = new List<Opportunity>();
+        Opportunity opp = null;
+        
+        try {
+            // Checking Statius on individual Project Measures
+            for(OpportunityLineItem oli :[SELECT Id, System_Val_Status_EI__c, EI_Error_Summary__c, OpportunityId 
+                                            FROM OpportunityLineItem 
+                                            WHERE OpportunityId IN :projectIdSet 
+                                            AND Project_Measure_Status_EI__c 
+                                            NOT IN:excludeMatchingLogicStatusSet]) {
+                
+                if(oli.System_Val_Status_EI__c == 'Validated') {
+                    if(!parentMap.containsKey(oli.OpportunityId)) {
+                        parentMap.put(oli.OpportunityId, true);
+                    }
+                }
+                else {
+                    parentMap.put(oli.OpportunityId, false);
+                }
+            }
+            
+            // Capturing Status On Project
+            for(Id projectId: parentMap.keySet()) {
+                opp = new Opportunity(Id = projectId); 
+                if(parentMap.get(projectId) == true) {
+                    opp.System_Validation_Status_EI__c = 'Validated';
+                }
+                else {
+                    opp.System_Validation_Status_EI__c = 'Errors';
+                    opp.EI_Error_Summary__c = System.Label.EI_ProjectValidationError;
+                    opp.Project_Validated_EI__c = false;
+                }
+                opportunityList.add(opp);
+            }
+        }
+        catch(Exception e) {
+            EI_CreateErrorLog.upsertException(EI_CreateErrorLog.logException('AP_EI_OpportunityTriggerHelper', e));
+        }
+        
+        return opportunityList;
+    }
+    
+    /** oxm5
+    * @Description: Method to set Water Savings Project status after Water Savings Determination has ran
+    * @Parameter: Set<Id> projectIdSet
+    * @Return: List<Opportunity>
+    * @Usage: Sets Water Savings Project status after Validation Job,CV logic, and Water Savings Determination are complete
+    **/
+    
+    public static List<Opportunity> setWaterSavingProjectStatus(Set<Id> projectIdSet) {
+        
+        // Variable declaration
+        Map<Id, Boolean> parentMap = new Map<Id, Boolean>();
+        List<opportunity> opportunityList = new List<Opportunity>();
+        Opportunity opp = null;
+        
+        try {
+            // Checking Status on individual Project Measures where Water_Measure_Component_EI__c=true
+            for(OpportunityLineItem oli :[SELECT Id, System_Val_Status_EI__c, EI_Error_Summary__c, OpportunityId 
+                                            FROM OpportunityLineItem 
+                                            WHERE OpportunityId IN :projectIdSet 
+                                            AND Water_Measure_Component_EI__c=true
+                                            AND Project_Measure_Status_EI__c NOT IN:excludeMatchingLogicStatusSet]){
+                       if(oli.System_Val_Status_EI__c == 'Validated') 
+                       {
+                          if(!parentMap.containsKey(oli.OpportunityId)) {
+                           parentMap.put(oli.OpportunityId, true);
+                          }
+                      }
+                else {
+                      parentMap.put(oli.OpportunityId, false);
+                      }
+                }
+            
+            // Capturing Status On Project
+            for(Id projectId: parentMap.keySet()) {
+                opp = new Opportunity(Id = projectId); 
+                if(parentMap.get(projectId) == true) 
+                 {
+                opp.Water_Savings_Validation_EI__c = 'Validated';
+                }
+                else 
+                {
+                   opp.Water_Savings_Validation_EI__c = 'Errors';
+                }
+                opportunityList.add(opp);}}
+        catch(Exception e) {
+            EI_CreateErrorLog.upsertException(EI_CreateErrorLog.logException('AP_EI_OpportunityTriggerHelper', e));
+        }
+        return opportunityList;
+    }
+    
+  
+    
+    
+    /**
+    * @Description: Calculates the SBD Incentive
+    * @Parameter: 
+    * @Return: 
+    * @Usage: SBD Incentive is calculated on chnage of Stageon Project
+    **/
+    public static List<OpportunityLineItem> sBDIncentiveCalc(Set<Id> chIncentiveOppIdSet) {
+    
+        Map<Id, List<OpportunityLineItem>> projPMMap = new Map<Id, List<OpportunityLineItem>>();
+        Map<String, List<OpportunityLineItem>> sBDPMMap = new Map<String, List<OpportunityLineItem>>();
+        List<OpportunityLineItem> sBDPMUpdate = new List<OpportunityLineItem>();
+        OpportunityLineItem nonsbdPM = new OpportunityLineItem();
+        
+        try {
+            // Capturing Project Measures of Saving-By-Design Projects
+            //Fix for Case 18971 User: P4SE - fetching Measure code to check for CIA52 or CIA53
+            for(OpportunityLineItem projM : [select id, OpportunityId,Measure_Code_EI__c, Uncapped_Incentive_EI__c, Provided_Incentive_EI__c, Savings_by_Design_EI__c, Total_Custom_Incentive_EI__c from OpportunityLineItem where OpportunityId IN: chIncentiveOppIdSet]) {
+                if(!projPMMap.containsKey(projM.OpportunityId)){
+                    projPMMap.put(projM.OpportunityId, new List<OpportunityLineItem>{projM});
+                }
+                else {
+                    projPMMap.get(projM.OpportunityId).add(projM);
+                }
+            }
+            // Grouping project Measures on basis of SBD flag on PM
+            for(Id projId : projPMMap.keySet()) {
+                 
+                for(OpportunityLineItem projM : projPMMap.get(projId)) {
+                    if(!sBDPMMap.containsKey(projId+String.ValueOf(projM.Savings_by_Design_EI__c))){
+                        sBDPMMap.put(projId+String.ValueOf(projM.Savings_by_Design_EI__c), new List<OpportunityLineItem>{projM});
+                    }
+                    else {
+                        sBDPMMap.get(projId+String.ValueOf(projM.Savings_by_Design_EI__c)).add(projM);
+                    }
+                }
+            }
+          
+            // Calculating SBD Incentive on Project Measure for SBD Projects
+            
+
+
+            for(Id projId : projPMMap.keySet()) {
+               if(sBDPMMap.containsKey(projId+'true') && sBDPMMap.containsKey(projId+'false')) {
+
+                    // Fetching non SBD PM
+                    nonsbdPM = sBDPMMap.get(projId+'false')[0];
+                    // Fetching SBD PM and assigning correct Incentive
+                    for(OpportunityLineItem sBDPM : sBDPMMap.get(projId+'true')) {
+                    
+                    //Fix for Case 18971 User: P4SE
+                 if( ! (sBDPM.Measure_Code_EI__c=='CIA52' || sBDPM.Measure_Code_EI__c=='CIA53')  )
+                     {
+                        sBDPM.Provided_Incentive_EI__c = nonsbdPM.Total_Custom_Incentive_EI__c/6;
+                     }
+                     else if (sBDPM.Provided_Incentive_EI__c==null){
+                         
+                     sBDPM.Provided_Incentive_EI__c = nonsbdPM.Total_Custom_Incentive_EI__c/6;    
+                         
+                     }
+                        sBDPMUpdate.add(sBDPM);
+                    }
+                }
+               
+            }
+            
+        }
+        catch(Exception e) {
+            EI_CreateErrorLog.upsertException(EI_CreateErrorLog.logException('AP_EI_OpportunityTriggerHandler', e));
+        }
+        
+        return sBDPMUpdate;
+    }
+    
+    /**
+    * @Description: Cascade the Site Building Type and Site Vintage to Project Measures.
+    * @Parameter: Map<Id, Opportunity> optyMap
+    * @Return: void
+    * @Usage: This method cascades the site building type, site vintage value of Project to Project Measures when they are changed.
+    **/
+    public static List<OpportunityLineItem> cascadeChangesToProjectMeasure(Map<Id, Opportunity> optyMap) {
+        
+        List<OpportunityLineItem> oliList = new List<OpportunityLineItem>();
+        
+        try { 
+            for(OpportunityLineItem oli : [SELECT Id, OpportunityId FROM OpportunityLineItem WHERE OpportunityId IN: optyMap.keySet()]) {
+                oli.Site_Bldg_Type_EI__c = (optyMap.get(oli.OpportunityId).Site_Building_Type_EI__c != null ? optyMap.get(oli.OpportunityId).Site_Building_Type_EI__c.split('-')[0].trim():null);
+                oli.Site_Vintage_Year_EI__c = (optyMap.get(oli.OpportunityId).Site_Vintage_Year_EI__c != null ? optyMap.get(oli.OpportunityId).Site_Vintage_Year_EI__c.split('-')[0].trim():null);
+                oliList.add(oli);
+            }
+        } 
+        catch(Exception e) {
+            EI_CreateErrorLog.upsertException(EI_CreateErrorLog.logException('AP_EI_OpportunityTriggerHelper', e));
+        }
+        
+        return oliList;
+    }
+    
+    /**
+    * @Description: Verify Program Access.
+    * @Parameter: List<Opportunity> opptyList
+    * @Return: void
+    * @Usage: This method is to verify whether the user has access to the program or not.
+    *         It also sets the record type on Opportunity based on the "Processing Workflow" field on Program.
+    *         It copies the payee fields from account to opportunity for Trade Pro and Partner Users.
+    **/
+    public static void verifyProgramAccess(List<Opportunity> opptyList) {
+        
+        Map<String, EI_Vendor_Program_Eligibility__c> progVPEMap = new Map<String, EI_Vendor_Program_Eligibility__c>();
+        Map<String, String> processWFMap = new Map<String, String>{'Deemed' => DEEMED_AP_PROCESS, 'Custom' => CUSTOM_APP_PROCESS, 'Custom Lite' => CUSTOM_LITE};
+        Set<String> setForDataEntryFlagCheck = new Set<String>{'Deemed', 'Custom Lite'};
+        Set<String> setForCustomerSupportedType = new Set<String>{'3P', 'GP'};
+        Map<String, Id> projRTMap = new Map<String, Id>();
+        String processWF, recordTypeDevName, customerSupportedType;
+        Set<String> rulProgramCodes = new Set<String>();
+        Account acc = null;
+         
+        try {
+            
+            // Quering all Project Record Types
+            for(RecordType projRT :rtMap.values()) {
+                projRTMap.put(projRT.DeveloperName, projRT.id);
+            }
+            
+            // Querying the vendor account.
+            if(u.accountId != null) {
+                acc = [SELECT Id, Name, Tax_ID_Status_EI__c, Fed_Tax_Id_EI__c FROM Account WHERE Id =: u.AccountId LIMIT 1];
+            }
+            
+            // Iterate over the opportunities to create a map of program codes and their salesforce id's.
+            Set<String> programCodeSet = new Set<String>();
+            for(Opportunity opp :opptyList) {
+                if(opp.Program_Code_EI__c != null && !''.equals(opp.Program_Code_EI__c) && opp.recordtype.name !='PGE_ESA_Application_Parent_EI') {
+                    programCodeSet.add(opp.Program_Code_EI__c);
+                }
+            }
+            
+            // querying the vendor program eligibility records based on the program code that the vendor has perovided in the CSV file.
+            if(!programCodeSet.isEmpty()) {
+                if(u.accountId != null) {
+                 /*                            
+                     * user:p4se
+                     * copying payee field to opportunity fix for 16957
+                     */
+                    for(EI_Vendor_Program_Eligibility__c vpe : [SELECT Id, Payee_Attention_To_EI__c, Payee_Email_EI__c, 
+                                                                Payee_Mailing_Address_EI__c, Payee_Mailing_City_EI__c, Payee_Name_EI__c,  
+                                                                Payee_Mailing_State_EI2__c, Payee_Phone_EI__c, Account_EI__c, 
+                                                                Eligible_Program_EI__c, Eligible_Program_EI__r.Pgm_Code_EI__c, 
+                                                                Eligible_Program_EI__r.Supported_Partner_Type_EI__c, 
+                                                                Eligible_Program_EI__r.Payee_Source_EI__c, Eligible_Program_EI__r.Processing_Workflow_EI__c, 
+                                                                Payee_Mailing_Zip_EI__c 
+                                                                FROM EI_Vendor_Program_Eligibility__c 
+                                                                WHERE Eligible_Program_EI__r.Pgm_Code_EI__c IN :programCodeSet 
+                                                                AND Account_EI__c =:u.AccountId]) {
+                                                                
+                        progVPEMap.put(vpe.Eligible_Program_EI__r.Pgm_Code_EI__c, vpe);
+                    }
+                }
+            }
+         
+            for(EI_Program_Control_Logic__c progCntrlLogic : EI_Program_Control_Logic__c.getall().values()) {
+                if(progCntrlLogic.Percent__c != null) {
+                    rulProgramCodes.add(progCntrlLogic.Name);
+                }
+            }
+            
+            // Iterate over opportunities to set the record type.
+            for(Opportunity opptyRec : opptyList) {
+                if(opptyRec.Program_Code_EI__c != null) {
+                    if(progVPEMap.containsKey(opptyRec.Program_Code_EI__c)) {
+                        
+                        // populating the program on opportunity for bulk upload
+                        opptyRec.Program_EI__c = progVPEMap.get(opptyRec.Program_Code_EI__c).Eligible_Program_EI__c;
+                        
+                        // populating Application Source as Bulk Import on Proj record DF-00806
+                        opptyRec.Application_Source_EI__c = System.label.AP_EI_BulkImport_Source;
+                        
+                        // set the default stage name for bulk upload.
+                        opptyRec.StageName = OPPORTUNITY_STAGE_NAME;
+                        
+                        //fetching customer supported type and processing workflow from program.
+                        customerSupportedType = (progVPEMap.get(opptyRec.Program_Code_EI__c).Eligible_Program_EI__r.Supported_Partner_Type_EI__c != null ? progVPEMap.get(opptyRec.Program_Code_EI__c).Eligible_Program_EI__r.Supported_Partner_Type_EI__c : '');
+                        processWF = (progVPEMap.get(opptyRec.Program_Code_EI__c).Eligible_Program_EI__r.Processing_Workflow_EI__c != null ? progVPEMap.get(opptyRec.Program_Code_EI__c).Eligible_Program_EI__r.Processing_Workflow_EI__c : '');
+                        
+                        // if the program is a distributor or deemed.
+                        if(customerSupportedType.equalsIgnoreCase('Distributor Program') && processWF.equalsIgnoreCase('Deemed')) {
+                            if(!rulProgramCodes.contains(opptyRec.Program_Code_EI__c) || (opptyRec.Program_Model_EI__c).equalsIgnoreCase(RUL_PROGRAM_MODEL_PS)) {
+                                opptyRec.StageName = POST_INSTALL_REVIEW;
+                                
+                                // if project Install Date is Empty, assign Today's date
+                                if(opptyRec.Project_Install_Date_EI__c == null) {
+                                    opptyRec.Project_Install_Date_EI__c = System.TODAY();
+                                }
+                            }
+                        }
+                        
+                        // if Program Supported Type = 3P or GP && Program Processing Workflow = Deemed or Custom-Lite
+                        if((customerSupportedType.equalsIgnoreCase('3P') || customerSupportedType.equalsIgnoreCase('GP')) && !rulProgramCodes.contains(opptyRec.Program_Code_EI__c) && (processWF.equalsIgnoreCase('Deemed') || processWF.equalsIgnoreCase('Custom Lite'))) {
+                            if(opptyRec.Project_Install_Date_EI__c != null) {
+                                opptyRec.StageName = POST_INSTALL_REVIEW;
+                            }
+                            else {
+                                opptyRec.StageName = DEEMED_OPPTY_STAGENAME;
+                            }
+                        }
+                        
+                        // setting the record type based on the processing workflow of program.
+                        if(processWFMap.containsKey(processWF)) {
+                            recordTypeDevName = processWFMap.get(processWF);
+                            if(recordTypeDevName != null && projRTMap.containsKey(recordTypeDevName)) {
+                                // assigning the record type based on processing workflow of program.
+                                opptyRec.RecordTypeId = projRTMap.get(recordTypeDevName);
+                                if(recordTypeDevName == processWFMap.get('Custom')) {
+                                   opptyRec.StageName = CUSTOM_OPPTY_STAGENAME;
+                                }
+                            }
+                        } else {
+                            // setting the deemed record type on opportunity.
+                            opptyRec.RecordTypeId = projRTMap.get(DEEMED_AP_PROCESS);
+                        } 
+                        
+                        // If the vendor has vendor program eligibility record then copy the payee fields from program to opportunity.
+                        if((opptyRec.Payee_Recipient_Type_EI__c != null && 'Partner'.equalsIgnoreCase(opptyRec.Payee_Recipient_Type_EI__c)) || ('Partner'.equalsIgnoreCase(progVPEMap.get(opptyRec.Program_Code_EI__c).Eligible_Program_EI__r.Payee_Source_EI__c))) {
+                            
+                            // Assigning Payee Tax Id fields on project from Vendor Account
+                            if(acc != null) {
+                                opptyRec.Payee_EI__c = acc.Name;
+                                opptyRec.Payee_Tax_ID_Status_EI__c = acc.Tax_ID_Status_EI__c;
+                                
+                                if(acc.Fed_Tax_Id_EI__c != null){
+                                    opptyRec.Payee_Tax_ID_EI__c = acc.Fed_Tax_Id_EI__c;
+                                    opptyRec.Fed_Tax_Id_EI__c = acc.Fed_Tax_Id_EI__c;
+                                }    
+                            }
+                            
+                            // Copying the remaining payee fields from partner program eligibility record to opportunity record.
+                            opptyRec.Payee_Attention_To_EI__c = progVPEMap.get(opptyRec.Program_Code_EI__c).Payee_Attention_To_EI__c;
+                            opptyRec.Payee_Mailing_Address_EI__c = progVPEMap.get(opptyRec.Program_Code_EI__c).Payee_Mailing_Address_EI__c;
+                            opptyRec.Payee_Mailing_City_EI__c = progVPEMap.get(opptyRec.Program_Code_EI__c).Payee_Mailing_City_EI__c;
+                            opptyRec.Payee_Mailing_State_EI__c = progVPEMap.get(opptyRec.Program_Code_EI__c).Payee_Mailing_State_EI2__c;
+                            opptyRec.Payee_Mailing_Zip__c = String.ValueOf(progVPEMap.get(opptyRec.Program_Code_EI__c).Payee_Mailing_Zip_EI__c);
+                            opptyRec.Payee_Phone_EI__c = progVPEMap.get(opptyRec.Program_Code_EI__c).Payee_Phone_EI__c;  
+                            opptyRec.Payee_Email_EI__c = progVPEMap.get(opptyRec.Program_Code_EI__c).Payee_Email_EI__c; 
+
+                           /*                            
+                            * user:p4se
+                            * copying payee field to opportunity fix for 16957
+                            */
+                           if( progVPEMap.get(opptyRec.Program_Code_EI__c).Payee_Name_EI__c!=null & progVPEMap.get(opptyRec.Program_Code_EI__c).Payee_Name_EI__c!='')
+                           {
+                            opptyRec.Payee_EI__c = progVPEMap.get(opptyRec.Program_Code_EI__c).Payee_Name_EI__c;
+                            }  
+                        }
+                    }
+                    else {
+                        opptyRec.addError(System.Label.EI_ProgramAccessError);
+                    }
+                }
+                else {
+                    opptyRec.addError(System.label.EI_ProgramCodeError);
+                }
+            }
+        } catch(Exception e) {
+            EI_CreateErrorLog.upsertException(EI_CreateErrorLog.logException('AP_EI_OpportunityTriggerHelper', e));
+        }
+    }
+    
+    /**
+    * @Description:After Insert Trigger Handler
+    * @Parameter: 
+    * @Return: 
+    * @Usage: 
+    **/
+    public static void afterInsertTriggerHandler(List<Opportunity> OldProjects, List<Opportunity> newProjects, Map<Id,Opportunity> oldProjectMap) {  
+         
+        OBF_EcologyProjectHelper.AfterInsertEcologyProjectEventHandler(null,newProjects,null);  
+        
+        // Method to give Project permission to Partner / Implementer accounts on Program
+        AP_EI_ProjectUtils.threePGPPartImplementerProjPermission(newProjects);
+        
+        // Method to create Program Owner related to Project as Opportunity Team member under project
+        AP_EI_ProjectUtils.addProgramManagerAsOTM(newProjects);
+        
+        //Deepika Added 8/8/2017
+        //Method to add opportunity Team Member
+        ESAProjectUtility.insertOppTeamMember(newProjects);
+       
+    }      
+    
+   /**
+    * @Description:After delete Trigger handler
+    * @Parameter: 
+    * @Return: 
+    * @Usage: 
+    **/
+    public static void afterDeleteTriggerHandler(List<Opportunity> OldProjects, List<Opportunity> newProjects, Map<Id,Opportunity> oldProjectMap) {
+       
+        OBF_EcologyProjectHelper.AfterInsertEcologyProjectEventHandler(OldProjects, null, null);
+    } 
+    
+    /**
+    * @Description:After Undelete Trigger handler
+    * @Parameter: 
+    * @Return: 
+    * @Usage: 
+    **/
+    public static void afterUnDeleteTriggerHandler(List<Opportunity> OldProjects, List<Opportunity> newProjects, Map<Id,Opportunity> oldProjectMap) {
+       
+        OBF_EcologyProjectHelper.AfterInsertEcologyProjectEventHandler(null, newProjects, null);
+    } 
+    
+     
+
+
+    
+}
