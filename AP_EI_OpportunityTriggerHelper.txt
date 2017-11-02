@@ -18,6 +18,9 @@ Modification Log     :
 * Supriya Sunki        4/5/2017               Case 17578, avoid attachment validation for external users only 
 *PraveenKumar Subramaniam      04/05/2017             Case 16957, Add Payee field to Partner Program Eligibility
 *PraveenKumar Subramaniam      12/05/2017             Case 18971, Update logic for SBD DT calculation
+*PraveenKumar Subramaniam      08/08/2017              Story 760 - Automatically add 3P GP Implementer to Opportunity Team when creating an Opportunity
+* Bhushan Narkhede      8/16/2017             Case 24355; Site BUilding Type Autopopulation based on Site Agreement
+* Bhushan             25/9/2017               Story 760 - Automatically add 3P GP Implementer to Opportunity Team when creating an Opportunity
 ***************************************************************************************************/
 
 public with sharing class AP_EI_OpportunityTriggerHelper {
@@ -42,6 +45,8 @@ public with sharing class AP_EI_OpportunityTriggerHelper {
     static final String ESA_REF_LEV_CUST_QUAL_REVIEW = 'Awaiting Qualification Review';
  
     
+    public static Boolean checkOwnerMod = false; 
+    public static list<OpportunityTeamMember> lstExtOTM = new list<OpportunityTeamMember>();
     public static User u {
         get {
             if(u == null) {
@@ -106,6 +111,7 @@ public with sharing class AP_EI_OpportunityTriggerHelper {
         Map<Id, EI_Program__c> programMap = new Map<Id, EI_Program__c>();
          List<Opportunity> esaOpplst = new List<Opportunity>();
          
+        checkOwnerMod = true;// b1nb; Bulk Upload critical Error: DML exceed; STY-00760 modification
         try {
         
             // calling the mandatory field check logic on project.
@@ -239,6 +245,7 @@ public with sharing class AP_EI_OpportunityTriggerHelper {
          Map<id,opportunity> ESAMap1=new Map<id,opportunity>();
          Map<id,opportunity> ESAMap2=new Map<id,opportunity>();
         
+        String sCheckBuildType;//b1nb; Case 24355; 08/16/2017; To verify if Site Building type autopopulation is required
         
          try {
              for(Opportunity opp :newMap.values()) { 
@@ -251,11 +258,38 @@ public with sharing class AP_EI_OpportunityTriggerHelper {
                  programMap = new Map<Id, EI_Program__c>([SELECT Id, Processing_Workflow_EI__c, Supported_Partner_Type_EI__c, Pgm_Code_EI__c,OwnerId FROM EI_Program__c WHERE Id IN: programIdSet LIMIT 50000]);
              }
              
+             // b1nb Case 24355/ STY-00757 ; Calling setUpBuildingType 
+            for(Opportunity opp: newMap.values()){
+                system.debug('@@@@@ Inside Before Update Trigger condition: '+opp);
+                if( opp.Site_Name_EI__c != null && 
+                   (    
+                       (
+                           opp.Building_Type_Description_EI__c == null || opp.Building_Type_Description_EI__c == ''
+                       ) || 
+                       (
+                           opp.Site_Name_EI__c != oldMap.get(opp.id).Site_Name_EI__c && 
+                           opp.Building_Type_Description_EI__c == oldMap.get(opp.id).Building_Type_Description_EI__c
+                       )
+                   )){
+                       sCheckBuildType = 'Check';
+                       system.debug('@@@@@ sCheckBuildType: '+sCheckBuildType);
+                   }
+                
+            }
+             if(sCheckBuildType == 'Check'){
+                setUpBuildingType(newMap, oldMap);
+                
+            }
+            // b1nb Case 24355/ STY-00757 ; Change ends
+             
              if(!isValidationJob ) { // skip this mandatory check for validation job - added by naveen 
                  // Executing Mandatory check on before update
                  AP_EI_MandatoryFieldValidation.validateProject(newMap.values(), isBulkUpload);  
              }
-            
+             // Added validation for not allowing  -- story 900/ 
+             
+             validateSystemValidationFieldForPortal(oldMap,newMap);
+              
              // Capturing Opportunitites based on Record type for Deemed / Custom flow
              for(Opportunity opp : newMap.values()) {
                 
@@ -299,6 +333,11 @@ public with sharing class AP_EI_OpportunityTriggerHelper {
                    && recordTypeNameSetESA.contains(rtMap.get(opp.RecordTypeId).DeveloperName)){
                         system.debug('M inside if ESAMap1');
                     ESAMap1.put(opp.id,opp);
+                 // b1nb; Bulk Upload critical Error: DML exceed; STY-00760 modification
+                system.debug('@@@@ oldMap.get(opp.Id).Owner: '+oldMap.get(opp.Id).OwnerId);
+                system.debug('@@@@ newMap.get(opp.Id).Owner: '+newMap.get(opp.Id).OwnerId);
+                if(oldMap.get(opp.Id).OwnerId!=newMap.get(opp.Id).OwnerId && checkOwnerMod == false){
+                    checkOwnerMod = true;
                 }
                 
                 if (((opp.System_Validation_Status_EI__c != oldMap.get(opp.Id).System_Validation_Status_EI__c && opp.System_Validation_Status_EI__c == SYS_STATUS_VALIDATED ))
@@ -321,7 +360,17 @@ public with sharing class AP_EI_OpportunityTriggerHelper {
 
                
 
+                // b1nb; Bulk Upload critical Error: DML exceed; STY-00760 modification Ends
             }
+             
+            // b1nb; Bulk Upload critical Error: DML exceed; STY-00760 modification
+                if(checkOwnerMod == true){
+                    system.debug('@@@@ Inside BeforeUpdate checkOwnerMod true');                        
+                    lstExtOTM = [select OpportunityId, userid, id, TeamMemberRole, OpportunityAccessLevel
+                                         from OpportunityTeamMember where OpportunityId in :newMap.values()];
+                }// b1nb; Bulk Upload critical Error: DML exceed; STY-00760 modification ends
+                
+             
             
             // If the logged in user is a partner user and if it is a sales opportunity then do a check for VPE, if the user is populating/changing the program.
             if(checkForVPEList.size()>0) {
@@ -415,6 +464,30 @@ ESAProjectUtility.populateSalesTax(oppList);
         }
     }
      
+     /** Story-900 S0bo
+    * @Description: Restricting Portal User from update the SystemValidationStatus to Validated and Needs Review
+    *  This will be skipped for Portal Users
+    * @Parameter: List<Opportunity> oppList
+    * @Return: void
+    * @Usage: Throws an error if any one of portal user is trying to update the SystemValidationStatus
+    **/
+        private static void validateSystemValidationFieldForPortal(Map<Id,Opportunity> oldMap,Map<Id,Opportunity> newmap) {
+        Project_System_Validation__c sysValCustSetting = Project_System_Validation__c.getInstance(UserInfo.getProfileId());
+        if(sysValCustSetting != null){
+            Boolean isValidationApplies = sysValCustSetting.isActive__c;
+            for(Opportunity proj:newmap.values()){
+                Opportunity oldProj = oldMap.get(proj.Id);
+                if( !System.isBatch() &&
+                   proj.System_Validation_Status_EI__c != oldProj.System_Validation_Status_EI__c &&
+                   (proj.System_Validation_Status_EI__c == 'Pending' || proj.System_Validation_Status_EI__c == 'Validated' ||
+                    proj.System_Validation_Status_EI__c == 'Errors' || proj.System_Validation_Status_EI__c == 'Needs Review' ) &&
+                   (isValidationApplies)){
+                       proj.addError(system.label.Patner_user_validation);
+                   }
+            }
+        }
+    } 
+    
     /**
     * @Description: After Update Trigger Handler
     * @Parameter: Map<Id, Opportunity> newMap, Map<Id, Opportunity> oldMap
@@ -706,6 +779,15 @@ ESAProjectUtility.populateSalesTax(oppList);
             OBF_EcologyProjectHelper.AfterInsertEcologyProjectEventHandler(oldMap.values(), newMap.values(), oldMap); 
             /** OBF - END **/
             
+        //User:P4SE Story 760 - Automatically add 3P GP Implementer to Opportunity Team when creating an Opportunity
+            //if(!test.isRunningTest())
+            //{
+                if(checkOwnerMod == true){// b1nb; Bulk Upload critical Error: DML exceed; STY-00760 modification
+                    system.debug('@@@@ Inside AfterUpdate checkOwnerMod true');
+                    AP_EI_ProjectUtils.addOpportunityTeamMemebers(newMap.values(), lstExtOTM);    
+                }// b1nb; Bulk Upload critical Error: DML exceed; STY-00760 modification
+                
+             //}
             
             if (ESACache.getESAOptyLineItemMap().size()>0){
                 Database.SaveResult[] projectMeasureSaveresults = Database.update(ESACache.getESAOptyLineItemMap().values(),false);
@@ -1186,8 +1268,124 @@ ESAProjectUtility.populateSalesTax(oppList);
         OBF_EcologyProjectHelper.AfterInsertEcologyProjectEventHandler(null, newProjects, null);
     } 
     
-     
+       /**
+* @Description:b1nb; 08/16/2017; Auto-populate Building type handler
+* @Parameter: 
+* @Return: 
+* @Usage: Called from Before Update handler
+**/    
+     public static void setUpBuildingType(Map<Id, Opportunity> newMap, Map<Id, Opportunity> oldMap){
+        
+        //b1nb; 03/08/2017; Case 24355; Fetching values from custom setting mapping
+        Map<string, string> csBuildingTypeMap = new map<string, string>(); // Custom stting mapping
+        Map<string, string> cUpperCaseBuildType = new map<string, string>(); // Map to put keep Custom setting building type values in Upper Case
+        //list<EI_Site__c> sSiteList = new List<EI_Site__c>();//ToBeInactivated
+        Set<Id> siteIdSet = new Set<Id>(); //All modified optys site
+        map<Id, string> sNewBuldMap = new Map<Id, string>();//Map of Opportunity Id and New Building Type
+        map<string, string> sSectorCdBuildTypeMap = new map<string, string>();
+        list<ER_Building_Type_Dependency__c> custSettingBuildType = new List<ER_Building_Type_Dependency__c>();
+        Map<Id, String> optyProgDelTypeMap = new Map<Id, String>();
+        try {
+            // Fetch Picklist values present in Building Type of Opportunity
+            
+            Schema.DescribeFieldResult OptyBuildType = Opportunity.Site_Building_Type_EI__c.getDescribe();
+            set<string> SetOptyBuildType = new set<string>();
+            system.debug('@@@@@ Start : '+ custSettingBuildType);
+            for(Schema.PicklistEntry f: OptyBuildType.getPicklistValues()){
+                SetOptyBuildType.add((f.getLabel()).toUpperCase());
+            }
+            system.debug('@@@@@ SetOptyBuildType: '+SetOptyBuildType);
+            
+            // Fetch Building Type Description - Building Type - Sector Code mapping from Custom code and pupulate 
+            // 3 Maps: csBuildingTypeMap, cUpperCaseBuildType, sSectorCdBuildTypeMap
+            
+            custSettingBuildType = ER_Building_Type_Dependency__c.getAll().Values();
+            for(ER_Building_Type_Dependency__c tempCC : custSettingBuildType){
+                string sTempBuildType = tempCC.Child_Options_EI__c;
+                csBuildingTypeMap.put(sTempBuildType, tempCC.name);
+                cUpperCaseBuildType.put(sTempBuildType.toUpperCase(), tempCC.Child_Options_EI__c);
+                system.debug('@@@@@ tempCC 1: '+tempCC);
+                
+                if(tempCC.Sector_Code__c != null){
+                    system.debug('@@@@@ tempCC 2: '+tempCC.Sector_Code__c);
+                    sSectorCdBuildTypeMap.put((tempCC.Sector_Code__c).toUpperCase(), sTempBuildType);
+                }
+            }
+            
+            // Storing Set of all Site Agreement from New List of Opportunity in siteIdSet
+            
+            for(Opportunity opp : newMap.values()){
+                siteIdSet.add(opp.Site_Name_EI__c);
+                
+            }     
+            
+            // sNewSiteMap prepares map of Site ID and NAICS code details present on SITE 
+            map<Id, EI_Site__c> sNewSiteMap = new Map<Id, EI_Site__c>([select id, NAICS_Code_relation_EI__r.Building_Type_EI__c, NAICS_Code_relation_EI__r.Sector_Code_EI__c
+                                                                       from EI_Site__c where id in :siteIdSet ]);
+            
+            system.debug('@@@@@ sNewSiteMap: '+sNewSiteMap);
+            
+            // Map sNewBuldMap is build like : Opportunity ID and Corresponding Building Type from Site based on NAICS Code Building Type or sector code
+            for(Opportunity Opp : newMap.values()){
+                if(sNewSiteMap.get(Opp.Site_Name_EI__c) != null)
+                {
+                    string sNaicsBuildType = sNewSiteMap.get(Opp.Site_Name_EI__c).NAICS_Code_relation_EI__r.Building_Type_EI__c;
+                    string sNaicsSectorCode= sNewSiteMap.get(Opp.Site_Name_EI__c).NAICS_Code_relation_EI__r.Sector_Code_EI__c;               
+                    
+                    if(sNaicsBuildType!= null && SetOptyBuildType.contains(sNaicsBuildType) ){
+                        sNewBuldMap.put(Opp.Id, sNaicsBuildType);
+                    }
+                    
+                    else if(!String.isBlank(sNaicsSectorCode) && sSectorCdBuildTypeMap.containsKey(sNaicsSectorCode)){
+                        sNaicsSectorCode = sNaicsSectorCode.toUpperCase();                        
+                        sNewBuldMap.put(Opp.Id, (sSectorCdBuildTypeMap.get(sNaicsSectorCode)).toUpperCase());                       
+                    }
+                    
+                    else{
+                        
+                        //do nothing
+                    }
+                }
+            }
+            
+            system.debug('@@@@csBuildingTypeMap: '+csBuildingTypeMap);
+                   
+            system.debug('@@@@@ sNewBuldMap: '+sNewBuldMap);
+            
+            // Opportunity is updated if Building type is not manually selected by user.
+            
+            
+            for(Opportunity opp :newMap.values()) { 
+                
+                //b1nb changes
+                SYSTEM.debug('@@@@@ opp.Site_Name_EI__c: '+opp.Site_Name_EI__c +'@@@@oldMap.get(opp.id).Site_Name_EI__c: '+oldMap.get(opp.id).Site_Name_EI__c);
+                if( opp.Site_Name_EI__c != null && 
+                   (    
+                       (
+                           opp.Building_Type_Description_EI__c == null || opp.Building_Type_Description_EI__c == ''
+                       ) || 
+                       (
+                           opp.Site_Name_EI__c != oldMap.get(opp.id).Site_Name_EI__c && 
+                           opp.Building_Type_Description_EI__c == oldMap.get(opp.id).Building_Type_Description_EI__c
+                       )
+                   )){
+                       system.debug('@@@@@ first condition: '+opp+'  '+opp.Site_Name_EI__c);
+                       
+                       string sNAICSBuidType = sNewBuldMap.get(opp.Id);
+                       system.debug('@@@@@ String sNAICSBuidType: '+sNAICSBuidType);
+                       system.debug('@@@@@ String sNAICSBuidTypeDescription: '+csBuildingTypeMap.get(cUpperCaseBuildType.get(sNAICSBuidType)));
+                       if(!String.isBlank(sNAICSBuidType)){
+                            opp.Building_Type_Description_EI__c = csBuildingTypeMap.get(cUpperCaseBuildType.get(sNAICSBuidType));
+                            opp.Site_Building_Type_EI__c = cUpperCaseBuildType.get(sNAICSBuidType);
+                       }
+                       
+                       
+                   }
+            }
+        } 
+        catch(Exception e) {
+            EI_CreateErrorLog.upsertException(EI_CreateErrorLog.logException('AP_EI_OpportunityTriggerHelper', e));
+        }   
+    }
 
-
-    
 }
