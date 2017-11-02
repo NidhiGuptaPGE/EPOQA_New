@@ -427,7 +427,7 @@ public with sharing class AP_EI_DeemedCustomOLIEditCntrl{
             retPr = new PageReference('/apex/AP_EI_DeemedCustomOLI_Detail?Id='+PM.Id);
         }
         else if(oli.Id!=null){
-        if(oli.Id!=null){
+     
             update oli;
             retPr = new PageReference('/apex/AP_EI_DeemedCustomOLI_Detail?Id='+oli.Id);
         }
