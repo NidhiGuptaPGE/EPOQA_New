@@ -8,9 +8,10 @@ Story                :
 Work Task            :                                                                               
 Modification Log     :                                                                               
 *--------------------------------------------------------------------------------------------------  
-* Developer                   Date                   Description                                     
-* -------------------------------------------------------------------------------------------------  
-* Aarti Jindal               8/30/2016              First Iteration            
+* Developer                      Date            Description                                     
+* ------------------------------------------------------------------------------------------------  
+* Aarti Jindal                     8/30/2016    First Iteration            
+* Bhushan Narkhede        8/31/2017    Case 25706 / STY-00843 -To accomodate Demand Response Measure layout            
 ***************************************************************************************************/
 
 public with sharing class AP_EI_DeemedCustomOLIDetailCntrl{
@@ -88,6 +89,7 @@ public with sharing class AP_EI_DeemedCustomOLIDetailCntrl{
   }
     //end of changes by sambit
     
+    public Map<String,String> readyOnlyApiNamesMAT = new Map<String,String>();
     /**
     * @Description: Constructor of class
     * @Parameter: ApexPages.StandardController
@@ -110,7 +112,14 @@ public with sharing class AP_EI_DeemedCustomOLIDetailCntrl{
                     readOnlyApiNamesCustom.add(apiName);
                 }   
             }
-        }   
+        } 
+        // START Kesav -- Case: 00015456 STY: 737 //
+        List<AP_EI_ReadOnlyFields_By_MAT__mdt> tempReadOnlyMAT = [SELECT Id, Label, List_Of_Read_Only_Fields__c FROM AP_EI_ReadOnlyFields_By_MAT__mdt];
+        for(AP_EI_ReadOnlyFields_By_MAT__mdt var:tempReadOnlyMAT)
+        {
+            readyOnlyApiNamesMAT.put(var.Label,var.List_Of_Read_Only_Fields__c);
+        }    
+        // Kesav -- Case: 00015456 STY: 737  END// 
         allNameString ='';
         oli = (OpportunityLineItem)controller.getRecord();
         String SobjectApiName = 'OpportunityLineItem';
@@ -157,6 +166,12 @@ public with sharing class AP_EI_DeemedCustomOLIDetailCntrl{
         if(oli.Product2.meas_Type_Code_EI__c == 'Deemed'){
             secVar = 'D';
             allNameString = string.join(readOnlyApiNamesDeemed,',');
+        /*    //b1nb Case 25706; adding IF condition to accomodate Demand Response Measure layout
+            if(oppRecTypeMap.get(oli.Opportunity.RecordTypeId).getName().containsIgnoreCase('Demand Response Project')){
+                system.debug('@@@@Inside Demand Response: ');
+                sections = [SELECT id,Name,Order_Number__c,Field_Set_Name__c,Type__c from EI_Deemed_Sections__c where IncludedInDemandResponse__c = True ORDER BY Order_Number__c];
+            }
+            else//b1nb case 25706; modification ends */
             sections = [SELECT id,Name,Order_Number__c,Field_Set_Name__c,Type__c from EI_Deemed_Sections__c where Type__c='Deemed' OR Type__c LIKE 'Both%' ORDER BY Order_Number__c];
         }
         else{
@@ -164,6 +179,7 @@ public with sharing class AP_EI_DeemedCustomOLIDetailCntrl{
                 secVar = 'C';
                 allNameString = string.join(readOnlyApiNamesCustom,',');
                 sections = [SELECT id,Name,Order_Number__c,Field_Set_Name__c, Type__c from EI_Deemed_Sections__c where Type__c='Custom' OR Type__c LIKE 'Both%' ORDER BY Order_Number__c];
+                makeFieldsReadOnly(); 
             }
         }
         if(sections!=null){
@@ -294,6 +310,8 @@ public with sharing class AP_EI_DeemedCustomOLIDetailCntrl{
             ApexPages.addMessages(ex);
             return null;  
         }    
+        PageReference retPr = new PageReference('/apex/AP_EI_DeemedCustomOLI_Detail?Id='+oli.Id);
+        retPr.setRedirect(true);
         return retPr;
     }
     
@@ -309,4 +327,19 @@ public with sharing class AP_EI_DeemedCustomOLIDetailCntrl{
         return retPr;
     }
 
+    // START Kesav -- Case: 00015456 STY: 737 //
+   public void makeFieldsReadOnly()
+   {
+       System.debug('Value:'+oli.Measure_App_Type_EI__c);
+       if(oli.Measure_App_Type_EI__c != NULL && readyOnlyApiNamesMAT.containsKey(oli.Measure_App_Type_EI__c))
+       {
+           allNameString = allNameString + readyOnlyApiNamesMAT.get(oli.Measure_App_Type_EI__c);
+       }
+       else if(oli.Measure_App_Type_EI__c == NULL)
+       {
+           allNameString = allNameString + readyOnlyApiNamesMAT.get('NULL');
+       }
+       System.debug('All String:'+allNameString);
+   }
+    // Kesav -- Case: 00015456 STY: 737  END //
 }
