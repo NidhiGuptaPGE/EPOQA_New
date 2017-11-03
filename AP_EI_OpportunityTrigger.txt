@@ -1,0 +1,67 @@
+/**************************************************************************************************   
+Apex Util class Name :  AP_EI_OpportunityTrigger
+Version              :  1.0                                                                          
+Created Date         :  7/7/2016                                                         
+Function             :  
+Story                :                                                                                
+Work Task            :                                                                               
+Modification Log     :                                                                               
+*--------------------------------------------------------------------------------------------------  
+* Developer            Date                   Description                                     
+* -------------------------------------------------------------------------------------------------  
+* Naveen K Udatha      7/7/2016               Created.
+* Sagar M              12/8/2016              Added OBF Trigger
+* Balaram Nair         5/31/2017              Added OpportunityTaskAssignments logic 
+***************************************************************************************************/
+trigger AP_EI_OpportunityTrigger on Opportunity (before insert,before update, after update, after delete, after undelete, before delete, after insert) {
+    
+    EI_Trigger_Switch__c switchVar = EI_Trigger_Switch__c.getInstance('AP_EI_OpportunityTrigger');
+    
+    if(switchVar != null) {
+        if( switchVar.EI_IsActive__c == false ) {
+            return; 
+        }
+      
+    if(Trigger.isBefore && checkRecursive.runOptyBeforeTrigger ) {
+            checkRecursive.runOptyBeforeTrigger = false;
+            if(Trigger.isInsert) {
+                ESA_OpportunityImplementer.beforeInsertTriggerHandler(Trigger.new); 
+                AP_EI_OpportunityTriggerHelper.beforeInsertTriggerHandler(Trigger.new); 
+            }
+            
+            if(Trigger.isupdate){ 
+                ESA_OpportunityImplementer.beforeInsertTriggerHandler(Trigger.new); 
+                ESA_OpportunityImplementer.beforeUpdateTriggerHandler(Trigger.newMap, Trigger.oldMap);
+                AP_EI_OpportunityTriggerHelper.beforeUpdateTriggerHandler(Trigger.newMap, Trigger.oldMap); 
+                
+            }
+            
+            if(Trigger.isDelete){ 
+                AP_EI_OpportunityTriggerHelper.beforeDeleteTriggerHandler(Trigger.oldMap); 
+            }
+        }
+        
+        else if(Trigger.isAfter && checkRecursive.runOptyAfterTrigger ){
+        
+            checkRecursive.runOptyAfterTrigger = false;
+          
+            if(Trigger.isInsert) {  
+                 AP_EI_OpportunityTriggerHelper.afterInsertTriggerHandler(null, trigger.new,null);
+                 OpportunityTaskAssignments.createTask (trigger.new, trigger.oldMap);
+            }
+            
+            if(Trigger.isUpdate) {
+                AP_EI_OpportunityTriggerHelper.afterUpdateTriggerHandler(Trigger.newMap, Trigger.oldMap);
+                OpportunityTaskAssignments.createTask (trigger.new, trigger.oldMap);
+            }
+             if(Trigger.isDelete) {
+               AP_EI_OpportunityTriggerHelper.afterDeleteTriggerHandler(trigger.old, null,null);
+            }
+            
+            if(Trigger.isUndelete){
+               AP_EI_OpportunityTriggerHelper.afterUnDeleteTriggerHandler(null, trigger.new,null);
+            }
+        }
+    }
+   } 
+
