@@ -1,0 +1,50 @@
+/**************************************************************************************************   
+Apex Class Name      :  AP_EI_OpportunityLineItemTrigger 
+Version              :  1.0                                                                       
+Created Date         :  6/29/2016                                                              
+Function             :  
+Story                :                                                                               
+Work Task            :                                                                               
+Modification Log     :                                                                               
+*--------------------------------------------------------------------------------------------------  
+* Developer                 Date                   Description                                     
+* -------------------------------------------------------------------------------------------------  
+* Naveen Udatha             6/29/2016              Created.
+* Nikhil Kapoor                                    First Iteration.
+* Sagar                                            Second Iteration.
+***************************************************************************************************/
+trigger AP_EI_OpportunityLineItemTrigger on OpportunityLineItem (before insert,after insert, before update,after update, before delete) { 
+   
+    EI_Trigger_Switch__c switchVar = EI_Trigger_Switch__c.getInstance('AP_EI_OpportunityLineItemTrigger');
+    if(switchVar != null) {
+        if( switchVar.EI_IsActive__c == false ) {
+            return; 
+        }
+    }
+    if(Trigger.isbefore && CheckRecursive.runOptyLineItemBeforeTrigger ) {
+            CheckRecursive.runOptyLineItemBeforeTrigger = false;
+            if(Trigger.isUpdate) {
+                AP_EI_OpportunityLineItemTriggerHandler.handleBeforeUpdate(Trigger.newMap, Trigger.oldMap);
+            }
+            else if(Trigger.isInsert) {
+                AP_EI_OpportunityLineItemTriggerHandler.handleBeforeInsert(Trigger.new);
+            }
+            else if(Trigger.isDelete){ 
+                AP_EI_OpportunityLineItemTriggerHandler.handleBeforeDelete(Trigger.oldMap); 
+            }
+        }
+        
+        else if(Trigger.isafter && CheckRecursive.runOptyLineItemAfterTrigger ) { 
+            CheckRecursive.runOptyLineItemAfterTrigger = false;
+            if(Trigger.isInsert) {    
+                AP_EI_OpportunityLineItemTriggerHandler.handleAfterInsert(Trigger.newMap);
+            }
+
+            if(Trigger.isUpdate) {    
+                AP_EI_OpportunityLineItemTriggerHandler.handleAfterUpdate(Trigger.newMap, Trigger.oldMap);
+            }
+            else if(Trigger.isDelete) {    
+                //AP_EI_OpportunityLineItemTriggerHandler.handleAfterDelete(Trigger.oldMap);
+            }
+        } 
+    }
