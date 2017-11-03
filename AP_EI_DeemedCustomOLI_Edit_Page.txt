@@ -1,0 +1,74 @@
+<!-- 
+ Deemed Custom OLI Edit Page
+ @description   OLI edit page that displays based on measure type code
+ @author        Aarti Jindal
+ @story         
+ @worktask      
+ @createddate   Aug 30,2016 
+-->
+<apex:page standardcontroller="OpportunityLineItem"  extensions="AP_EI_DeemedCustomOLIEditCntrl">
+<script>
+    var redirect = new Boolean('{!JSENCODE(if(redirect,"True","False"))}');
+    if({!redirect}) {
+        window.top.location.href='{!$Site.BaseUrl}/{!JSINHTMLENCODE(oli.id)}/e?retURL=%2F{!JSINHTMLENCODE(oli.id)}&nooverride=1';
+    }
+</script>
+<apex:pagemessages />
+    <apex:sectionheader title="{!$ObjectType.OpportunityLineItem.label} Edit" subtitle="{!IF(ISNULL(oli.Opportunity.Name), 'New Project Measure',oli.Opportunity.Name)}" rendered="{!!isLocked}"/>
+    <apex:form rendered="{!!isLocked}">
+        <apex:pageblock mode="edit" title="{!$ObjectType.OpportunityLineItem.label} Edit" rendered="{!if(secVar=='C',true,false)}" id="custom">
+            <apex:pageblockbuttons >
+                <apex:commandbutton value="Save" action="{!saveAction}"/>
+                <apex:commandbutton value="Cancel" action="{!cancelAction}"/>
+            </apex:pageblockbuttons>
+                <apex:repeat value="{!sections}" var="sec">
+                    <apex:pageblocksection title="{!LEFT(sec.Name, LEN(sec.Name)-2)}" showheader="true" columns="2" >
+                        <apex:pageBlockSectionItem rendered="{!if(sec.Order_Number__c==1,true,false)}">
+                        <apex:outputLabel value="Measure" for="the_link" rendered="{!if(sec.Order_Number__c==1,true,false)}"/>
+                        <apex:outputLink value="/{!proToDisplay.Id}" id="the_link" rendered="{!if(sec.Order_Number__c==1,true,false)}">
+                        <apex:outputText value="{!proToDisplay.name}" rendered="{!if(sec.Order_Number__c==1,true,false)}"/>
+                        </apex:outputLink>
+                        </apex:pageBlockSectionItem>
+                        <apex:repeat value="{!fieldSetNameAndMembers[sec.Field_Set_Name__c]}" var="f">
+                        <!-- Daya - case - 00016191 -->
+            <!--         <apex:InputField value="{!oli[f]}" rendered="{!if(NOT(CONTAINS(allNameString,f))&& sec.Name!='Savings and Incentives Summary_C' && sec.Name!='System Information_B',true,false)}" required="{!OR(f.required, f.dbrequired)}"/> -->
+                         <apex:inputField value="{!oli[f]}" rendered="{!if(NOT(CONTAINS(allNameString,f))&& (f=='RUL_EI__c' || f=='Host_Equipment_RULEI__c' || sec.Name!='Savings and Incentives Summary_C') && sec.Name!='System Information_B'&& f!='Measure_App_Type_EI__c',true,false)}" required="{!OR(f.required, f.dbrequired)}"/>
+                       
+                        <!-- Kesav Case - 00015456  -->
+                         <apex:inputField value="{!oli[f]}" rendered="{!if(NOT(CONTAINS(allNameString,f))&& (f=='RUL_EI__c' || sec.Name!='Savings and Incentives Summary_C') && sec.Name!='System Information_B'&& f=='Measure_App_Type_EI__c',true,false)}" required="{!OR(f.required, f.dbrequired)}">
+                             <apex:actionSupport event="onchange" action="{!makeFieldsReadOnly}" reRender="custom"/>
+                         </apex:inputField>
+                         <!-- Kesav Case - 00015456   - END -->
+                         
+                         <apex:outputField value="{!oli[f]}" rendered="{!if(CONTAINS(allNameString,f)|| (f!='RUL_EI__c' && f!='Host_Equipment_RULEI__c' && sec.Name=='Savings and Incentives Summary_C') || sec.Name=='System Information_B',true,false)}"/>
+                         <!-- Daya - case - 00016191 - END -->
+                        </apex:repeat>
+                    </apex:pageblocksection>    
+                </apex:repeat>
+         </apex:pageblock>
+         
+      
+         <apex:pageblock mode="edit" title="{!$ObjectType.OpportunityLineItem.label} Edit" rendered="{!if(secVar=='D',true,false)}">
+            <apex:pageblockbuttons >
+                <apex:commandbutton value="Save" action="{!saveAction}"/>
+                <apex:commandbutton value="Cancel" action="{!cancelAction}"/>
+            </apex:pageblockbuttons>
+                <apex:repeat value="{!sections}" var="sec">
+                    <apex:pageblocksection title="{!LEFT(sec.Name, LEN(sec.Name)-2)}" showheader="true" columns="2">
+                        <apex:pageBlockSectionItem rendered="{!if(sec.Order_Number__c==1,true,false)}">
+                        <apex:outputLabel value="Measure" for="the_link" rendered="{!if(sec.Order_Number__c==1,true,false)}"/>
+                        <apex:outputLink value="/{!proToDisplay.Id}" id="the_link" rendered="{!if(sec.Order_Number__c==1,true,false)}">
+                        <apex:outputText value="{!proToDisplay.name}" rendered="{!if(sec.Order_Number__c==1,true,false)}"/>
+                        </apex:outputLink>
+                        </apex:pageBlockSectionItem>
+                        <apex:repeat value="{!fieldSetNameAndMembers[sec.Field_Set_Name__c]}" var="f">
+                             <apex:inputField value="{!oli[f]}" rendered="{!if(NOT(CONTAINS(allNameString,f)),true,false)}" required="{!OR(f.required, f.dbrequired)}"/>                            
+                             <apex:outputField value="{!oli[f]}" rendered="{!if(CONTAINS(allNameString,f),true,false)}"/>
+                             <!--<apex:outputField value="{!oli[f]}" rendered="{!if(f=='Double_Dip_Status_EI__c',true,false)}"/>-->
+                        </apex:repeat>
+                    </apex:pageblocksection>    
+                </apex:repeat>
+         </apex:pageblock>
+         
+    </apex:form>
+</apex:page>
