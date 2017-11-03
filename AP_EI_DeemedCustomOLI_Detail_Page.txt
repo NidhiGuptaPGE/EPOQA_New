@@ -1,0 +1,156 @@
+<!-- 
+ Deemed Custom OLI Detail Page
+ @description   OLI detail page that displays based on measure type code
+ @author        Aarti Jindal
+ @story         
+ @worktask      
+ @createddate   Aug 30,2016 
+-->
+<apex:page standardcontroller="OpportunityLineItem" extensions="AP_EI_DeemedCustomOLIDetailCntrl">
+
+<apex:pagemessages />
+    <apex:sectionheader title="{!$ObjectType.OpportunityLineItem.label} Detail" subtitle="{!OpportunityLineItem.Opportunity.Name}"/>
+    <chatter:feedwithfollowers entityId="{!OpportunityLineItem.Id}"/>
+    <apex:form >
+        <apex:outputpanel rendered="{!!CheckESA}">
+         <apex:pageblock mode="maindetail" title="{!$ObjectType.OpportunityLineItem.label} Detail" rendered="{!if(secVar=='C',true,false)}">
+            <apex:pageblockbuttons >
+                <apex:commandbutton value="Edit" id="editId" action="{!EditAction}" rendered="{!!isLocked}"/>
+                <apex:commandbutton value="Delete" id="delId" action="{!DeleteAction}" rendered="{!!isLocked}"/>
+                <apex:commandButton value="Save" id="update" action="{!quicksave}" styleclass="updateButton" style="display:none"/>
+                <apex:commandButton value="Cancel" id="cancelId" action="{!quickcancel}" styleclass="updateButton" style="display:none"/>
+            </apex:pageblockbuttons>
+                 
+                <apex:repeat value="{!sections}" var="sec">
+                    <apex:pageblocksection title="{!LEFT(sec.Name, LEN(sec.Name)-2)}" showheader="true" columns="2">
+                        <apex:outputfield value="{!oli.PriceBookEntry.Product2Id}" rendered="{!if(sec.Order_Number__c==1,true,false)}"/>
+                        <apex:repeat value="{!fieldSetNameAndMembers[sec.Field_Set_Name__c]}" var="f">
+                         <apex:OutputField value="{!oli[f]}">
+                         <apex:inlineEditSupport showOnEdit="update,cancelId" hideOnEdit="editId,delId" event="ondblclick" rendered="{!if(isLocked==false && NOT(CONTAINS(allNameString,f)) && sec.Name!='Savings and Incentives Summary_C' && sec.Name!='System Information_B',true,false)}"/>
+                         </apex:OutputField>  
+                        </apex:repeat>
+                    </apex:pageblocksection>    
+                </apex:repeat>
+        </apex:pageblock>
+        
+        <apex:pageblock mode="maindetail" title="{!$ObjectType.OpportunityLineItem.label} Detail" rendered="{!if(secVar=='D',true,false)}">
+            <apex:pageblockbuttons >
+                <apex:commandbutton value="Edit" id="editId" action="{!EditAction}" rendered="{!!isLocked}"/>
+                <apex:commandbutton value="Delete" id="delId" action="{!DeleteAction}" rendered="{!!isLocked}"/>
+                <apex:commandButton value="Save" id="update" action="{!quicksave}" styleclass="updateButton" style="display:none"/>
+                <apex:commandButton value="Cancel" id="cancelId" action="{!quickcancel}" styleclass="updateButton" style="display:none"/>
+            </apex:pageblockbuttons>
+                
+                <apex:repeat value="{!sections}" var="sec">
+                    <apex:pageblocksection title="{!LEFT(sec.Name, LEN(sec.Name)-2)}" showheader="true" columns="2">
+                        <apex:outputfield value="{!oli.PriceBookEntry.Product2Id}" rendered="{!if(sec.Order_Number__c==1,true,false)}"/>
+                        <apex:repeat value="{!fieldSetNameAndMembers[sec.Field_Set_Name__c]}" var="f">
+                         <apex:OutputField value="{!oli[f]}">
+                         <apex:inlineEditSupport showOnEdit="update,cancelId" hideOnEdit="editId,delId" event="ondblclick" rendered="{!if(isLocked==false && NOT(CONTAINS(allNameString,f)),true,false)}"/>
+                         </apex:OutputField>
+                        </apex:repeat>
+                    </apex:pageblocksection>    
+                </apex:repeat>
+        </apex:pageblock> 
+        </apex:outputpanel>
+        <!-- Added by Sambit on 6/7/2017 -->
+        <apex:outputpanel rendered="{!CheckESA}">  
+        <apex:pageblock >
+            <apex:pageblockbuttons >
+                <apex:commandbutton value="Edit" id="editId" action="{!EditAction}" rendered="{!!isLocked}"/>
+                <apex:commandbutton value="Delete" id="delId" action="{!DeleteAction}" rendered="{!!isLocked}"/>
+                <apex:commandButton value="Save" id="update" action="{!quicksave}" styleclass="updateButton" style="display:none"/>
+                <apex:commandButton value="Cancel" id="cancelId" action="{!quickcancel}" styleclass="updateButton" style="display:none"/>
+            </apex:pageblockbuttons>
+            
+            <apex:pageBlockSection collapsible="true" title="Measure Details" rendered="{!(workflowtype=='AC Tune-Up')}">
+                <apex:repeat value="{!MeasureDetails}" var="M">
+                    <apex:outputField value="{!PM[M]}" rendered="{!(M!='ESA_Material_Price_Id_EI__c') && (M!='F_ESA_Qty_Cap_EI__c') && (M!='F_ESA_Dollar_Cap_EI__c')}"/>
+                </apex:repeat>
+            </apex:pageBlockSection> 
+            
+            <apex:pageBlockSection collapsible="true" title="Measure Details" rendered="{!(workflowtype=='Enrollment')}">
+                <apex:repeat value="{!MeasureDetailsER}" var="M">
+                    <apex:outputField value="{!PM[M]}" rendered="{!(M!='ESA_Material_Price_Id_EI__c') && (M!='F_ESA_Qty_Cap_EI__c') && (M!='F_ESA_Dollar_Cap_EI__c')}"/>
+                    <apex:outputField value="{!PM[M]}" rendered="{!(M=='ESA_Provided_Material_Price_EI__c' && editable)}"/>
+                    <apex:outputField value="{!PM[M]}" rendered="{!((M=='ESA_Material_Price_EI__c' && !editable) ||(M=='ESA_Support_Provided_Material_Price_EI__c' && !editable))}"/>
+                </apex:repeat>
+            </apex:pageBlockSection>
+            
+            <apex:pageBlockSection collapsible="true" title="Measure Details" rendered="{!(workflowtype=='Weatherization')}">
+                <apex:repeat value="{!MeasureDetailsWeatherization}" var="M">
+                    <apex:outputField value="{!PM[M]}" rendered="{!(M!='ESA_Material_Price_Id_EI__c') && (M!='F_ESA_Qty_Cap_EI__c') && (M!='F_ESA_Dollar_Cap_EI__c')}"/>
+                    <apex:outputField value="{!PM[M]}" rendered="{!(M=='ESA_Provided_Material_Price_EI__c' && editable)}"/>
+                    <apex:outputField value="{!PM[M]}" rendered="{!((M=='ESA_Material_Price_EI__c' && !editable) ||(M=='ESA_Support_Provided_Material_Price_EI__c' && !editable))}"/>
+                </apex:repeat>
+            </apex:pageBlockSection>
+            
+            <apex:pageBlockSection collapsible="true" title="Measure Details" rendered="{!(workflowtype=='Repair and Replacement')}">
+                <apex:repeat value="{!MeasureDetailsRR}" var="M">
+                    <apex:outputField value="{!PM[M]}" rendered="{!(M!='ESA_Material_Price_Id_EI__c') && (M!='F_ESA_Qty_Cap_EI__c') && (M!='F_ESA_Dollar_Cap_EI__c')}"/>
+                    <apex:outputField value="{!PM[M]}" rendered="{!(M=='ESA_Provided_Material_Price_EI__c' && editable)}"/>
+                    <apex:outputField value="{!PM[M]}" rendered="{!((M=='ESA_Material_Price_EI__c' && !editable) ||(M=='ESA_Support_Provided_Material_Price_EI__c' && !editable))}"/>
+                </apex:repeat>
+            </apex:pageBlockSection>
+            
+            <apex:pageBlockSection collapsible="true" title="Measure Details" rendered="{!(workflowtype=='Refrigerator Leveraging')}">
+                <apex:repeat value="{!MeasureDetailsRL}" var="M">
+                    <apex:outputField value="{!PM[M]}" rendered="{!(M!='ESA_Material_Price_Id_EI__c') && (M!='F_ESA_Qty_Cap_EI__c') && (M!='F_ESA_Dollar_Cap_EI__c')}"/>
+                    <apex:outputField value="{!PM[M]}" rendered="{!(M=='ESA_Provided_Material_Price_EI__c' && editable)}"/>
+                    <apex:outputField value="{!PM[M]}" rendered="{!((M=='ESA_Material_Price_EI__c' && !editable) ||(M=='ESA_Support_Provided_Material_Price_EI__c' && !editable))}"/>
+                </apex:repeat>
+            </apex:pageBlockSection>
+            
+            <apex:pageBlockSection collapsible="true" title="Measure Details" rendered="{!(workflowtype=='Large Appliances')}">
+                <apex:repeat value="{!MeasureDetailsLA}" var="M">
+                    <apex:outputField value="{!PM[M]}" rendered="{!(M!='ESA_Material_Price_Id_EI__c') && (M!='F_ESA_Qty_Cap_EI__c') && (M!='F_ESA_Dollar_Cap_EI__c')}"/>
+                    <apex:outputField value="{!PM[M]}" rendered="{!(M=='ESA_Provided_Material_Price_EI__c' && editable)}"/>
+                    <apex:outputField value="{!PM[M]}" rendered="{!((M=='ESA_Material_Price_EI__c' && !editable) ||(M=='ESA_Support_Provided_Material_Price_EI__c' && !editable))}"/>
+                </apex:repeat>
+            </apex:pageBlockSection>
+            
+            <apex:pageBlockSection collapsible="true" title="Price Details">
+                <apex:repeat value="{!PriceDtls}" var="P">
+                    <apex:outputField value="{!PM[P]}" rendered="{!(P=='ESA_Material_Price_EI__c' && !editable) || (P=='ESA_Support_Provided_Material_Price_EI__c' && !editable) ||(P=='ESA_Labor_Rate_EI__c') || (P=='ESA_Provided_Material_Price_EI__c' && editable) ||(P=='F_ESA_Labor_Cost_EI__c') || (P=='ESA_Labor_Hours_EI__c') || ((P=='ESA_Permit_Fee_EI__c') && editablePermit) || (P=='ESA_Copay_EI__c' && hascopay)}"/>
+                </apex:repeat>
+            </apex:pageBlockSection>
+            
+            <apex:pageBlockSection collapsible="true" title="Project Measure Status Details">
+                <apex:repeat value="{!MeasureDtls}" var="M">
+                    <apex:outputField value="{!PM[M]}"/>
+                </apex:repeat>
+            </apex:pageBlockSection>
+            
+            <apex:pageBlockSection collapsible="true" title="Approval Details" rendered="{!(workflowtype!='Refrigerator Leveraging')}">
+                <apex:repeat value="{!ApprovalStatus}" var="A">
+                    <apex:outputField value="{!PM[A]}"/>
+                </apex:repeat>
+            </apex:pageBlockSection>
+            
+            <apex:pageBlockSection collapsible="true" title="Referigerator Leveraging" rendered="{!(workflowtype=='Refrigerator Leveraging')}">
+                <apex:repeat value="{!ReferigeratorLeveraging}" var="R">
+                    <apex:outputField value="{!PM[R]}"/>
+                </apex:repeat>
+            </apex:pageBlockSection>
+            
+            <apex:pageBlockSection collapsible="true" title="AC Tune-Up Details" rendered="{!(workflowtype=='AC Tune-Up')}">
+                <apex:repeat value="{!ACTuneUpDetails}" var="A">
+                    <apex:outputField value="{!PM[A]}"/>
+                </apex:repeat>
+            </apex:pageBlockSection>
+                        
+            <apex:pageBlockSection collapsible="true" title="Savings">
+                <apex:repeat value="{!Savings}" var="S">
+                    <apex:outputField value="{!PM[S]}"/>
+                </apex:repeat>
+            </apex:pageBlockSection>
+            <apex:pageBlockSection collapsible="true" title="Appliance Attribute" rendered="{!showAttribute}">
+                <apex:repeat value="{!fieldSetMemberList}" var="f">
+                    <apex:outputField value="{!PM[f]}"/>
+                </apex:repeat>
+            </apex:pageBlockSection>
+        </apex:pageblock>
+        </apex:outputpanel>
+    </apex:form>
+   
+</apex:page>
