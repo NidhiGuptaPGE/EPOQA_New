@@ -22,6 +22,8 @@ Modification Log     :
 *PraveenKumar Subramaniam      08/08/2017              Story 760 - Automatically add 3P GP Implementer to Opportunity Team when creating an Opportunity
 * Bhushan Narkhede      8/16/2017             Case 24355; Site BUilding Type Autopopulation based on Site Agreement
 * Bhushan             25/9/2017               Story 760 - Automatically add 3P GP Implementer to Opportunity Team when creating an Opportunity
+*sainath Bandi   09/29/2017                   story 900- Restricting Portal User from update the SystemValidationStatus to Validated and Needs Review
+* Vijay kumar    10/25/2017                   story 753 - Allowing to populate FA
 ***************************************************************************************************/
 
 public with sharing class AP_EI_OpportunityTriggerHelper {
@@ -287,10 +289,11 @@ public with sharing class AP_EI_OpportunityTriggerHelper {
                  // Executing Mandatory check on before update
                  AP_EI_MandatoryFieldValidation.validateProject(newMap.values(), isBulkUpload);  
              }
-             // Added validation for not allowing  -- story 900/ 
-             
-             validateSystemValidationFieldForPortal(oldMap,newMap);
-              
+             // Added validation for FA ID  -- story 753/ v1kd           
+             System.debug ('######newmap'+newmap);
+             validateFinancingApplicationID(newMap,oldMap);
+             // Added validation for not allowing  -- story 900/ s0bo
+             validateSystemValidationFieldForPortal(oldMap,newMap);            
              // Capturing Opportunitites based on Record type for Deemed / Custom flow
              for(Opportunity opp : newMap.values()) {
                 
@@ -465,30 +468,6 @@ ESAProjectUtility.populateSalesTax(oppList);
         }
     }
      
-     /** Story-900 S0bo
-    * @Description: Restricting Portal User from update the SystemValidationStatus to Validated and Needs Review
-    *  This will be skipped for Portal Users
-    * @Parameter: List<Opportunity> oppList
-    * @Return: void
-    * @Usage: Throws an error if any one of portal user is trying to update the SystemValidationStatus
-    **/
-        private static void validateSystemValidationFieldForPortal(Map<Id,Opportunity> oldMap,Map<Id,Opportunity> newmap) {
-        Project_System_Validation__c sysValCustSetting = Project_System_Validation__c.getInstance(UserInfo.getProfileId());
-        if(sysValCustSetting != null){
-            Boolean isValidationApplies = sysValCustSetting.isActive__c;
-            for(Opportunity proj:newmap.values()){
-                Opportunity oldProj = oldMap.get(proj.Id);
-                if( !System.isBatch() &&
-                   proj.System_Validation_Status_EI__c != oldProj.System_Validation_Status_EI__c &&
-                   (proj.System_Validation_Status_EI__c == 'Pending' || proj.System_Validation_Status_EI__c == 'Validated' ||
-                    proj.System_Validation_Status_EI__c == 'Errors' || proj.System_Validation_Status_EI__c == 'Needs Review' ) &&
-                   (isValidationApplies)){
-                       proj.addError(system.label.Patner_user_validation);
-                   }
-            }
-        }
-    } 
-    
     /**
     * @Description: After Update Trigger Handler
     * @Parameter: Map<Id, Opportunity> newMap, Map<Id, Opportunity> oldMap
@@ -518,6 +497,8 @@ ESAProjectUtility.populateSalesTax(oppList);
         Map<Id, List<OpportunityLineItem>> passedProjPMMap = new Map<Id, List<OpportunityLineItem>>();
         Map<Id, Opportunity> oppMap = new Map<Id, Opportunity>();
         Map<Id, OpportunityLineItem> oliUpdateMap = new Map<Id, OpportunityLineItem>();
+        //Sainath for populating Rebate Measure records based on Projects Measures
+        List<Id> IdsForRebateMeasureUpdate = new List<Id>();
         
         Map<id,opportunity> ESAMap1=new Map<id,opportunity>();
         Map<id,opportunity> ESAMap2=new Map<id,opportunity>();
@@ -545,6 +526,10 @@ ESAProjectUtility.populateSalesTax(oppList);
                 if(opp.StageName != oldMap.get(opp.id).StageName && ((oldMap.get(opp.id).StageName == POST_INSTALL_REVIEW && opp.StageName == '14 - Pending Approval') || (oldMap.get(opp.id).StageName == PRE_INSTALL_REVIEW && (opp.StageName == '13 - ED Review - C' || opp.StageName == '8B - Installation - C')))) {
                     customCappingList.add(opp); 
                 }
+                //Sainath for populating Rebate Measure records based on Projects Measures
+                if(opp.Name != oldMap.get(opp.id).Name){
+                    IdsForRebateMeasureUpdate.add(opp.id);
+                }
                 
                 if(isSingleEntryWizard) {
                     if(opp.Site_Building_Type_EI__c != oldMap.get(opp.Id).Site_Building_Type_EI__c || opp.Site_Vintage_Year_EI__c != oldMap.get(opp.Id).Site_Vintage_Year_EI__c) {
@@ -559,7 +544,7 @@ ESAProjectUtility.populateSalesTax(oppList);
                 if(opp.Post_Install_Review_Complete_EI__c != oldMap.get(opp.Id).Post_Install_Review_Complete_EI__c && opp.Post_Install_Review_Complete_EI__c == true && opp.StageName == POST_INSTALL_REVIEW && opp.System_Validation_Status_EI__c == 'Validated' && kickerDeemedSet.contains(rtMap.get(opp.recordTypeId).DeveloperName)) {
                     opptyIdForKickerSet.add(opp.Id);
                 }
-                
+
                 if((opp.StageName != oldMap.get(opp.Id).StageName) && ((oldMap.get(opp.Id).StageName == PRE_INSTALL_TECH_REVIEW  && opp.StageName == PRE_INSTALL_REVIEW) || (oldMap.get(opp.Id).StageName == ED_REVIEW  && opp.StageName == PRE_INSTALL_REVIEW)) && opp.System_Validation_Status_EI__c == 'Validated' && kickerCustomSet.contains(rtMap.get(opp.recordTypeId).DeveloperName)) {
                     opptyIdForKickerSet.add(opp.Id);
                 } 
@@ -569,9 +554,11 @@ ESAProjectUtility.populateSalesTax(oppList);
                     chIncentiveOppIdSet.add(opp.Id);
                 }
                 
-                if((opp.StageName != oldMap.get(opp.Id).StageName && opp.StageName == POST_INSTALL_REVIEW && opp.Project_Validated_EI__c == true && opp.Project_Measure_Split_EI__c != true &&
+                if(((opp.StageName != oldMap.get(opp.Id).StageName && opp.StageName == POST_INSTALL_REVIEW && opp.Project_Validated_EI__c == true && opp.Project_Measure_Split_EI__c != true &&
                      oppMap.get(opp.Id).Program_EI__r.Pgm_Code_EI__c != null && !''.equals(oppMap.get(opp.Id).Program_EI__r.Pgm_Code_EI__c)) || (opp.Project_Validated_EI__c != oldMap.get(opp.Id).Project_Validated_EI__c && opp.Project_Validated_EI__c == true && opp.StageName == POST_INSTALL_REVIEW && opp.Project_Measure_Split_EI__c != true &&
-                     oppMap.get(opp.Id).Program_EI__r.Pgm_Code_EI__c != null && !''.equals(oppMap.get(opp.Id).Program_EI__r.Pgm_Code_EI__c))) {
+                     oppMap.get(opp.Id).Program_EI__r.Pgm_Code_EI__c != null && !''.equals(oppMap.get(opp.Id).Program_EI__r.Pgm_Code_EI__c))) 
+                   && !isValidationJob//b1nb-STY-00707-Commercial Oppoty is managed in Validation explicitely
+                  ) {
                      commercialOpptyMap.put(opp.Id, oppMap.get(opp.Id));
                 }
                 
@@ -594,6 +581,10 @@ ESAProjectUtility.populateSalesTax(oppList);
 
           
             
+            //Sainath for populating Rebate Measure records based on Projects Measures
+           if(IdsForRebateMeasureUpdate.size()>0){
+              RebateMeasureUtil.upsertRebateMeasurefromProj(IdsForRebateMeasureUpdate);
+            }            
             /** Adding Program Manager to Opportunity- START**/
             if(progManagerAsOTM.size() > 0) {
                 AP_EI_ProjectUtils.addProgramManagerAsOTM(progManagerAsOTM);
@@ -1389,5 +1380,148 @@ ESAProjectUtility.populateSalesTax(oppList);
             EI_CreateErrorLog.upsertException(EI_CreateErrorLog.logException('AP_EI_OpportunityTriggerHelper', e));
         }   
     }
+    /** Story-900 S0bo
+    * @Description: Restricting Portal User from update the SystemValidationStatus to Validated and Needs Review
+    *  This will be skipped for Portal Users
+    * @Parameter: List<Opportunity> oppList
+    * @Return: void
+    * @Usage: Throws an error if any one of portal user is trying to update the SystemValidationStatus
+    **/
+        private static void validateSystemValidationFieldForPortal(Map<Id,Opportunity> oldMap,Map<Id,Opportunity> newmap) {
+        Project_System_Validation__c sysValCustSetting = Project_System_Validation__c.getInstance(UserInfo.getProfileId());
+        if(sysValCustSetting != null){
+            Boolean isValidationApplies = sysValCustSetting.isActive__c;
+            for(Opportunity proj:newmap.values()){
+                Opportunity oldProj = oldMap.get(proj.Id);
+                if( !System.isBatch() &&
+                   proj.System_Validation_Status_EI__c != oldProj.System_Validation_Status_EI__c &&
+                   (proj.System_Validation_Status_EI__c == 'Pending' || proj.System_Validation_Status_EI__c == 'Validated' ||
+                    proj.System_Validation_Status_EI__c == 'Errors' || proj.System_Validation_Status_EI__c == 'Needs Review' ) &&
+                   (isValidationApplies)){
+                       proj.addError(system.label.Patner_user_validation);
+                   }
+            }
+        }
+    }
+    
+ /** Story-753 V1KD
+    * @Description: Restricting Portal User from entering invalid FA ID.
+    * @Parameter: List<Opportunity> oppList
+    * @Return: void
+    * @Usage: Throws an error if any one of portal user is trying populate invalid FA ID
+    **/
+    private static void validateFinancingApplicationID(Map<Id,Opportunity> newMap, Map<Id,Opportunity> oldMap) {
+        MAP<String,EI_Financing_Application__c> financialAppplicationMap = new MAP<String,EI_Financing_Application__c>();
+        MAP<Id,String> financialAppplicationIdMap = new MAP<Id,String>(); 
+        // Variable declaration
+        String fieldLabel;
+        String financialAppNumber; // Case - 23781, V1KD
+        String financialAppId; //Case - 23781, V1KD 
+        Boolean errorFound = false;        
+        Set<String> faNameSet = new Set<String>();
+        Set<Id> faIdSet = new Set<Id>();
+        String faTxt;
+        Integer faidTxtLn;
+        Boolean flag = true;
+        
+        System.debug ('######newMap'+newMap);
+        
+        if(!System.isBatch()){
+            for(Opportunity opp:newMap.values()){
+                faTxt = opp.Financing_Application_ID_Txt_EI__c;
+                if(faTxt != null){
+                    //add 0's as prefix
+                    faidTxtLn = faTxt.length();
+                    
+                    if(faidTxtLn < 6) {
+                        String s1 = '0';
+                        String s2 = s1.repeat(6-faidTxtLn); //ex:123: repeat(6-3) : prefix 000                     
+                        faTxt = s2 + faTxt;
+                    }
+                    faNameSet.add(faTxt);
+                    system.debug('@@@@'+faTxt);
+                }
+                faIdSet.add(opp.Financing_Application_EI__c);
+                system.debug('@@@@'+opp.Financing_Application_EI__c);
+            }
+            
+            for(EI_Financing_Application__c fa : AP_EI_ProjectUtils.fetchFANameList(faNameSet)){
+                financialAppplicationMap.put(fa.Name,fa);
+            }
+            
+            for(EI_Financing_Application__c fa : AP_EI_ProjectUtils.fetchFAIdList(faIdSet)){
+                financialAppplicationIdMap.put(fa.Id,fa.Name);
+            }
+            
+            system.debug ('@@@@financialAppplicationMap'+financialAppplicationMap);
+            system.debug ('@@@@financialAppplicationIdMap'+financialAppplicationIdMap);
+            
+            system.debug('~~financialAppplicationMap.size()~~'+financialAppplicationMap.size());
+            system.debug('~~financialAppplicationIdMap.size()~~'+financialAppplicationIdMap.size());
+                        
+            for(Opportunity proj:newMap.values()){
 
+                financialAppNumber = proj.Financing_Application_ID_Txt_EI__c;
+                financialAppId = proj.Financing_Application_EI__c;
+                
+                Opportunity oldProj = oldMap.get(proj.Id);
+                
+                system.debug('~~old~~'+oldProj.Financing_Application_ID_Txt_EI__c);
+                system.debug('~~new~~'+financialAppNumber);
+                
+                if(financialAppNumber != oldProj.Financing_Application_ID_Txt_EI__c && financialAppNumber == null){
+                    proj.Financing_Application_EI__c = null;    
+                }
+                
+                if(financialAppNumber != oldProj.Financing_Application_ID_Txt_EI__c || financialAppplicationMap.size() != 0)
+                { 
+                    //add 0's as prefix
+                    Integer faidTxtLen = financialAppNumber.length();                    
+                    system.debug ('~~faidTxtLen~~'+faidTxtLen);
+                    
+                    if(faidTxtLen < 6) {
+                        String s1 = '0';
+                        String s2 = s1.repeat(6-faidTxtLen); //ex:123: repeat(6-3) : prefix 000                     
+                        financialAppNumber = s2 + financialAppNumber;
+                    }                   
+                    
+                    system.debug ('@@@@financialAppNumber'+financialAppNumber);
+                    if(financialAppplicationMap.containsKey(financialAppNumber)){
+                        system.debug ('~~proj.Financing_Application_EI__c~~'+proj.Financing_Application_EI__c);
+                        proj.Financing_Application_EI__c = financialAppplicationMap.get(financialAppNumber).Id;
+                        system.debug ('~~proj.Financing_Application_EI__c~~'+proj.Financing_Application_EI__c);
+                        if(financialAppId != oldProj.Financing_Application_EI__c){
+                            flag = true;
+                        }else{
+                            flag = false;
+                        }
+                    } else if(!financialAppplicationMap.containsKey(financialAppNumber)){
+                        errorFound = true;
+                        //   fieldLabel = 'No corresponding FA found, for the FA ID entered';
+                    }
+                }
+                
+                system.debug('~~old~~'+oldProj.Financing_Application_EI__c);
+                system.debug('~~new~~'+financialAppId);
+                
+                if((financialAppId != oldProj.Financing_Application_EI__c || financialAppplicationIdMap.size() != 0) && flag)
+                {   
+                    system.debug('@@@@@@financialAppId'+financialAppId);
+                    if(financialAppId != null){
+                        if(financialAppplicationIdMap.containsKey(financialAppId)){
+                            proj.Financing_Application_ID_Txt_EI__c= financialAppplicationIdMap.get(financialAppId);
+                            proj.Financing_Application_EI__c = financialAppId;
+                        } else if(!financialAppplicationIdMap.containsKey(financialAppId)){
+                            errorFound = true;
+                            //   fieldLabel = 'No corresponding FA found, for the FA ID entered';
+                        }
+                    }
+                }
+                
+                if(errorFound == true){
+                    proj.addError(system.label.AP_EI_NoFAIDError);                    
+                }
+            }
+        }   
+    }   
 }
