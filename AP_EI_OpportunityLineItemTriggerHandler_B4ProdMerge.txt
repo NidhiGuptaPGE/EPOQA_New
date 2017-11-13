@@ -890,6 +890,11 @@ public without sharing class AP_EI_OpportunityLineItemTriggerHandler {
                 }
                 else {
                     //oli.Hydrologic_Region__c = ''; 
+                      }
+                // 00971 sidanth
+                if(oli.Site_Climate_Zone_EI__c == 'IOU' && SaidList.contains(oli.Site_Name_txt_EI__c))
+                {                    
+                oli.Hydrologic_Region__c='IOU';
                   
                 }
             } 
