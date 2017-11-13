@@ -1,0 +1,1186 @@
+/**************************************************************************************************   
+Apex Class Name      :  AP_EI_OpportunityLineItemTriggerHandler
+Version              :  1.0                                                                       
+Created Date         :  6/29/2016                                                              
+Function             :  Process OpportunityLineItem Records.
+Story                :                                        
+Work Task            :                                            
+Modification Log     :                                         
+*--------------------------------------------------------------------------------------------------  
+* Developer                 Date                   Description                                     
+* -------------------------------------------------------------------------------------------------  
+* Naveen Udatha             6/29/2016              Created.
+* Nikhil Kapoor                                    First Iteration.
+* Sagar                                            Second Iteration.
+* Naveen Udatha             7/20/2016              Third Iteration.
+* Sagar                     8/4/2016               Fourth Iteration.
+* Naveen Udatha             8/10/2016              Fifth Iteration.
+* Naveen Udatha             8/25/2016              Sixth Iteration. 
+* Naveen Udatha             9/19/2016              Seventh Iteration (Populating the building type description).
+* Aarti Jindal              12/12/2016             Commented Kicker Share calling logic as Kicker OWD changed to public Read Only.
+* Naveen K Udatha           2/1/2017               Updating the project measure record to populate kicker sum(Case 00014063 - STY-00042).
+* Oksana Master             3/17/2017              added hydrologic region population for the Deemed measures with Water measures - case 14130
+***************************************************************************************************/
+
+public without sharing class AP_EI_OpportunityLineItemTriggerHandler {
+
+    public static Boolean isBulkUpload = false;
+    
+    public static final Set<String> projectMeasureStatusSet = new Set<String> {'Rejected', 'Withdrawn'};                                               
+    public static final Set<String> projectStatusSet = new Set<String> {'7A - New - D&C', '10 - Approved for Payment - D&C', '11A - Paid - D&C', '14 - Pending Approval'};
+    public static Boolean executeOLITrigger = true;
+    public static Boolean isValidationJob = false;
+    public static final String MEASURE_CODE_DEEMED = 'Deemed';
+    public static final String MEASURE_CODE_CUSTOM = 'Custom';
+    public static final String PIR_PASSED = 'Post Install Review Passed';
+    public static final String DD_NO = 'No';
+    public static final Set<String> progSuppType = new Set<String>{'Distributor Program', '3P', 'GP'};
+    public static final Set<String> progProcessWF = new Set<String>{'Deemed', 'Custom Lite'};
+    public static final Set<String> recordtypesetESA = new Set<String> {'ESA A/C Tune Up', 'ESA A/C Tune Up Locked','ESA Application','ESA Large Appliance','ESA R&R','ESA R&R Locked','ESA Refrigerator Leveraging','  ESA Refrigerator Leveraging Locked','ESA Weatherization','ESA Weatherization Locked'}; 
+    public static final Set<String> recordTypeNameSetESA = new Set<String> { 'ESA_AC_Tune_Up','ESA_A_C_Tune_Up_Locked','PGE_ESA_Application_Parent_EI','ESA_large_Appliance','ESA_R_R','ESA_R_R_Locked','ESA_Refrigerator_Leveraging','ESA_Refrigerator_Leveraging_Locked','ESA_Weatherization','ESA_Weatherization_Locked'};
+    
+    /**
+    * @Description: static method for before insert
+    * @Parameter: List of Project Measure
+    * @Return: None
+    * @Usage: 
+    **/   
+    
+    public static void handleBeforeInsert(List<OpportunityLineItem> newList) {
+    
+        Set<Id> projectIdSet = new Set<Id>(); 
+        
+        Map<Id, Opportunity> opportunityMap = new Map<Id, Opportunity>();
+        List<OpportunityLineItem> projectMeasureList = new List<OpportunityLineItem>();
+        List<OpportunityLineItem> payeeProjectMeasureList = new List<OpportunityLineItem>();
+        List<OpportunityLineItem> addressDupProjectMeasure = new List<OpportunityLineItem>(); 
+        List<OpportunityLineItem> siteBuildingTypeList = new List<OpportunityLineItem>();
+        List <OpportunityLineItem> siteHydrologicRejionList = new List<OpportunityLineItem>();  
+        
+        try {
+        
+            for(OpportunityLineItem oli :newList) { 
+               
+                // taking all the project ids to query the project records.
+                projectIdSet.add(oli.OpportunityId);
+                
+                // entry criteria to call the logic to take the payee fields from project.
+                if(String.isBlank(oli.Payee_EI__c) && String.isBlank(oli.Payee_Attention_To_EI__c) && String.isBlank(oli.Payee_Email_EI__c) && String.isBlank(oli.Payee_Mailing_Add_EI__c) && String.isBlank(oli.Payee_Mailing_City_EI__c) && String.isBlank(oli.Payee_Mailing_State__c) && String.isBlank(oli.Payee_Mailing_Zip_EI__c) && String.isBlank(oli.Payee_Phone_EI__c) && String.isBlank(oli.Payee_Recipient_Type_EI__c) && String.isBlank(oli.Payee_Tax_ID_EI__c) && String.isBlank(oli.Payee_Tax_Status_EI__c)) {
+                
+                    payeeProjectMeasureList.add(oli);
+                }
+               
+                if(oli.Site_Service_Agreement_EI__c != null && oli.Site_Bldg_Type_EI__c == null) {
+                    siteBuildingTypeList.add(oli);
+                }
+                
+                // check whether the site address fields on project measure exist 
+                if(oli.Site_Address_EI__c   != null ||
+                   oli.Site_City_EI__c      != null ||
+                   oli.Site_State_EI__c     != null ||
+                   oli.Site_Zip_EI__c       != null) {
+                    addressDupProjectMeasure.add(oli);
+                }
+            }
+            
+            // populate climate zone on all the prooject measure based on the site zip code provided by the user/coming from the project.
+             populateClimateZone(newList);
+            
+            
+            //oxm5 populate Hydrologic Rejion
+            populateHydrologicRejion(newList);
+            
+            if(siteBuildingTypeList.size()>0) { 
+                populateBuildingType(siteBuildingTypeList); 
+            }
+                       
+            
+            // querying all the projects for their record types and status values, also these fields are used in matching logic.
+            if(!projectIdSet.isEmpty()) {
+                for(Opportunity opp: [SELECT Id, StageName, RecordType.DeveloperName, Program_EI__r.F_Mkt_Sectr_EI__c, 
+                                        Program_EI__r.Del_Typ_CEEDARS_EI__c, Application_Received_Date_EI__c, Payee_EI__c, Payee_Attention_To_EI__c, Payee_Email_EI__c, Payee_Mailing_Address_EI__c, 
+                                        Payee_Mailing_City_EI__c,Payee_Mailing_State_EI__c,  Payee_Mailing_Zip__c, Payee_Phone_EI__c, 
+                                        Payee_Recipient_Type_EI__c, Payee_Tax_ID_Status_EI__c, Fed_Tax_Id_EI__c,
+                                        Site_Name_txt_EI__c, Site_Name_EI__c, Site_Address_EI__c, Site_City__c,
+                                        Site_State_EI__c, Site_Zip_EI__c
+                                        FROM Opportunity WHERE ID IN:projectIdSet]) {
+                        
+                    opportunityMap.put(opp.Id, opp);
+                }
+            }
+            
+            // calling cascadePayeeInformation method
+            if(payeeProjectMeasureList.size()>0) {
+                AP_EI_ProjectMeasureUtils.cascadePayeeInformation(payeeProjectMeasureList, opportunityMap);
+            }
+            
+            // Populate full address in Project Measure
+            if(addressDupProjectMeasure.size() > 0) {
+                populateAddress(addressDupProjectMeasure);
+            }
+
+            // identifying whether the project is deemed/custom.
+            for(OpportunityLineItem oli :newList) {
+                if(!projectMeasureStatusSet.contains(oli.Project_Measure_Status_EI__c)) {
+                    projectMeasureList.add(oli); 
+                }
+            }
+            
+            // condition to run the code only for bulk upload
+            if(isBulkUpload) {
+                   // Mandatory field check on the project measure records.
+                   AP_EI_MandatoryFieldValidation.validateProjectMeasure(newList, isBulkUpload); 
+            } 
+            else {
+                if(!isValidationJob) {
+                    if(projectMeasureList.size()>0) {     
+                       // Mandatory field check on the project measure records.
+                       AP_EI_MandatoryFieldValidation.validateProjectMeasure(projectMeasureList, isBulkUpload);
+                   }
+                } 
+            }
+        }
+        catch(Exception e) {
+            EI_CreateErrorLog.upsertException(EI_CreateErrorLog.logException('AP_EI_OpportunityLineItemTriggerHandler', e));
+        }
+    }
+    /**
+    * @Description: Static method for Handle After Insert
+    * @Parameter:
+    * @Return: None
+    * @Usage: 
+    **/   
+    
+    public static void handleAfterInsert(Map<Id, OpportunityLineItem> newMap) {
+
+      try {
+                
+
+              //Added by sambit on 7/19/2017 for STY -1107 : NGAT Required logic
+                list<opportunity> updateopty=new list<opportunity>();
+                Set<Id> opptyIdSet = new Set<Id>(); 
+                map<id,list<OpportunityLineItem>> optyoptylineMap=new map<id,list<OpportunityLineItem>>();
+                for(OpportunityLineItem oli:[Select id,opportunityid from OpportunityLineItem where id IN:newMap.keyset() and Project_Measure_Status_EI__c NOT IN:projectMeasureStatusSet]){
+                    opptyidset.add(oli.opportunityid);
+                }
+                list<opportunity> opplist=new list<opportunity>([Select id,ESA_SubCon_NGAT_Required_EI__c,Program_EI__r.Processing_Workflow_EI__c,(select id,product2.ESA_Infiltration__c,Project_Measure_Status_EI__c from OpportunityLineItems) from opportunity where id IN:opptyidset]);
+                for(opportunity op:opplist)
+                    optyoptylineMap.put(op.id,new list<OpportunityLineItem>(op.OpportunityLineItems));
+                for(opportunity op:opplist)
+                {
+                    if(optyoptylineMap.containskey(op.id) && op.Program_EI__r.Processing_Workflow_EI__c!='Repair and Replacement'){
+                        for(OpportunityLineItem ol:optyoptylineMap.get(op.id)){
+                            if(ol.product2.ESA_Infiltration__c==true && !projectMeasureStatusSet.contains(ol.Project_Measure_Status_EI__c)){
+                                op.ESA_SubCon_NGAT_Required_EI__c=true;
+                                break;
+                            }
+                            else 
+                                op.ESA_SubCon_NGAT_Required_EI__c=false;
+                        }
+                        updateopty.add(op);
+                    }
+                    
+                }
+                update updateopty;
+             }
+             catch(Exception e) {
+            EI_CreateErrorLog.upsertException(EI_CreateErrorLog.logException('AP_EI_OpportunityLineItemTriggerHandler', e));
+        }
+
+             
+    }
+    
+    
+    /**
+    * @Description: Static method for Handle Before Update
+    * @Parameter:
+    * @Return: None
+    * @Usage: 
+    **/   
+    
+    public static void handleBeforeUpdate(Map<Id, OpportunityLineItem> newMap, Map<Id, OpportunityLineItem> oldMap) {
+    
+        List<OpportunityLineItem> oliList = new List<OpportunityLineItem>();
+        List<OpportunityLineItem> addressProjectMeasure = new List<OpportunityLineItem>();
+        List<OpportunityLineItem> manOppItemList = new list<OpportunityLineItem>(); 
+        List<OpportunityLineItem> oliCZList = new List<OpportunityLineItem>();
+        List<OpportunityLineItem> oliBTList = new List<OpportunityLineItem>();
+        List<OpportunityLineItem> oliHRList = new List<OpportunityLineItem>();   //oxm5
+        
+        try {
+            // to stop recursion.
+            if(executeOLITrigger) {
+                
+                // iterate over the new records.
+                for(OpportunityLineItem oli :newMap.values()) { 
+
+                   // exclude rejected and withdrawn project measures.
+                   if(!projectMeasureStatusSet.contains(oli.Project_Measure_Status_EI__c)) {
+                        
+                        // adding the records to a list to pass the records for mandatory check.
+                        manOppItemList.add(oli);
+                        
+                        // check whether the site address fields on project measure are changed. 
+                        if(oli.Site_Address_EI__c   != oldMap.get(oli.id).Site_Address_EI__c ||
+                           oli.Site_City_EI__c      != oldMap.get(oli.id).Site_City_EI__c    ||
+                           oli.Site_State_EI__c     != oldMap.get(oli.id).Site_State_EI__c   ||
+                           oli.Site_Zip_EI__c       != oldMap.get(oli.id).Site_Zip_EI__c) {
+                            addressProjectMeasure.add(oli);
+                        }
+                        
+                        // check whether the site zip code on project measure is changed
+                        if(oli.Site_Zip_EI__c != oldMap.get(oli.Id).Site_Zip_EI__c && !String.isBlank(oli.Site_Zip_EI__c)) {
+                            oliCZList.add(oli);
+                            //oxm5
+                            oliHRList.add(oli);
+                        }  
+                    } 
+                    
+                    // if the site is changed on project measure and the  building type on site is null.
+                    if(oli.Site_Service_Agreement_EI__c != null && oli.Site_Service_Agreement_EI__c != oldMap.get(oli.Id).Site_Service_Agreement_EI__c && oli.Site_Bldg_Type_EI__c == null) {
+                        oliBTList.add(oli);
+                    }
+                    
+                }
+                
+                // calling mandotary field validation
+                if(manOppItemList.size()>0 && !isValidationJob ) { // do not run the mandatory field check from batch class.
+                    AP_EI_MandatoryFieldValidation.validateProjectMeasure(manOppItemList, isBulkUpload); 
+                }
+                
+                // address on project measure
+                if(addressProjectMeasure.size() > 0) {
+                   populateAddress(addressProjectMeasure); 
+                }
+                
+                // populating the climate zone on project measure records of the zip code value is changed.
+                if(oliCZList.size() > 0) {
+                    populateClimateZone(oliCZList); 
+                }
+                
+                //oxm5 populating the hydrologic region on project measures records of the zip code values is changed
+                If (oliHRList.size()>0)
+                {
+                 populateHydrologicRejion(oliHRList);
+                }
+                
+                
+                // populating the Buidling Type on project measure records.
+                if(oliBTList.size() > 0) {
+                    populateBuildingType(oliBTList);
+                }
+                system.debug('newmap2 is '+newMap);
+                ProfileRestriction(newMap,oldMap);
+                ESAProjectUtility.DDReviewed(newMap,oldMap);
+                ESAProjectUtility.CapReviewed(newMap,oldMap);
+                
+                
+            } // recursion variable
+        } catch(Exception e) {
+            EI_CreateErrorLog.upsertException(EI_CreateErrorLog.logException('AP_EI_OpportunityLineItemTriggerHandler', e));
+        }
+    }
+    
+    /**
+    * @Description: Calling Kicker Logic
+    * @Parameter: 
+    * @Return: 
+    * @Usage: 
+    **/
+    
+    public static void handleAfterUpdate(Map<Id, OpportunityLineItem> newMap, Map<Id, OpportunityLineItem> oldMap) {
+        
+        // Variable declaration
+        Set<Id> opptyIdSet = new Set<Id>(); // to store opportunity ids.
+        Set<Id> passedProjIdSet = new Set<Id>();
+        Map<Id, List<OpportunityLineItem>> passedProjPMMap = new Map<Id, List<OpportunityLineItem>>();
+        Map<Id, Opportunity> oppMap = new Map<Id, Opportunity>();
+        Set<Id> customProjectIdSet = new Set<Id>(); // to store custom project ids.
+        Set<Id> deemedProjectIdSet = new Set<Id>(); // to store deemed project ids.
+        Set<Id> deemedLockedProjectIdSet = new Set<Id>(); // to store deemed locked project ids.
+        Set<Id> measureIdSet = new Set<Id>();
+        
+        List<OpportunityLineItem> oliList = new List<OpportunityLineItem>(); // mandatory check list
+        List<OpportunityLineItem> oliLstUpdated = new List<OpportunityLineItem>(); // double dip list
+        Set<Id> cappingProjectIdset = new Set<Id>();
+        List<Opportunity> cappingprojectlist = new List<Opportunity>();
+        List<Opportunity> passedProjectList = new List<Opportunity>();
+        Opportunity opty = new Opportunity();
+        Boolean allPMsPassed;
+        
+        // Saving-By-Design : Changing Custom Incentive Amount on Custom Project Measure 
+        Set<Id> oppIdSet = new Set<Id>();
+        Map<Id, List<OpportunityLineItem>> nonSbdProjPMMap = new Map<Id, List<OpportunityLineItem>>();
+        Map<Id, List<OpportunityLineItem>> sbdProjPMMap = new Map<Id, List<OpportunityLineItem>>();
+        OpportunityLineItem nonSBD = new OpportunityLineItem();
+        List<OpportunityLineItem> sbdOLIList = new List<OpportunityLineItem>();
+        List<OpportunityLineItem> kickerCascadeSavingsList = new List<OpportunityLineItem>(); // kicker list
+        Map<Id, OpportunityLineItem> kickerShareOliMap = new Map<Id, OpportunityLineItem>();
+        
+        try {
+            if(executeOLITrigger) {
+            
+                for(OpportunityLineItem oli :newMap.values()) {
+                
+                    opptyIdSet.add(oli.OpportunityId);
+                    
+                    if((oli.Materials_Cost_EI__c != oldMap.get(oli.Id).Materials_Cost_EI__c)                ||
+                       (oli.Inc_Measure_Cost_EI__c != oldMap.get(oli.Id).Inc_Measure_Cost_EI__c)            || 
+                       (oli.Full_Measure_Cost_EI__c != oldMap.get(oli.Id).Full_Measure_Cost_EI__c)          || 
+                       (oli.Implementer_Labor_Cost_EI__c != oldMap.get(oli.Id).Implementer_Labor_Cost_EI__c)||
+                       (oli.EUL_EI__c != oldMap.get(oli.Id).EUL_EI__c)) {
+                        cappingProjectIdSet.add(oli.OpportunityId);
+                    } 
+                    
+                    if((oli.Double_Dip_Rvw_Status_EI__c != oldMap.get(oli.Id).Double_Dip_Rvw_Status_EI__c && oli.Double_Dip_Rvw_Status_EI__c == 'Reviewed' )) {   
+                        oliLstUpdated.add(oli);
+                    }    
+                     
+                    if(oli.Are_Man_Fields_Validated_EI__c != oldMap.get(oli.id).Are_Man_Fields_Validated_EI__c && oli.Are_Man_Fields_Validated_EI__c) {
+                        oliList.add(oli);
+                    }
+                }
+                
+                // Check whether the project is Deemed or Custom or Custom Lite
+                for(Opportunity opp: [SELECT Id, StageName, RecordType.DeveloperName, Program_EI__c, Program_EI__r.Program_Implementer_EI__c, Program_EI__r.Supported_Partner_Type_EI__c, Program_EI__r.Processing_Workflow_EI__c FROM Opportunity WHERE ID IN: opptyIdSet]) {
+                    
+                    oppMap.put(opp.id, opp);
+                    
+                    if(opp.RecordType.DeveloperName == 'Custom_Application_Processing_Opportunity_Layout_EI' || opp.RecordType.DeveloperName == 'Custom_3rd_Party_EI') {
+                        customProjectIdSet.add(opp.Id);
+                    }
+                    else if((opp.RecordType.DeveloperName == 'EI_Deemed_Application_Processing_Opportunity' || opp.RecordType.DeveloperName == 'Deemed_3P_Direct_Install' || opp.RecordType.DeveloperName == 'EE_Custom_Lite')) {
+                        deemedProjectIdSet.add(opp.Id);
+                    }
+                    else {
+                        continue;
+                    }
+                }
+                
+                // calling double dip logic.
+                if(oliLstUpdated.size()>0 && !isValidationJob) { // !isValidationJob condition is added by naveen on 10/18/2016
+                    AP_EI_OpportunityLineItemTriggerHandler.checkDoubleDipStatus(oliLstUpdated);
+                }
+                
+                // Check All Mandatory Fields validated check box on header if all the mandatory fields are populated on line items.
+                if(oliList.size()>0 && !isValidationJob ) { // skip the mandatory field check from validation job
+                    AP_EI_OpportunityLineItemTriggerHandler.AfterUpdateMandatoryFieldCheck(oliList);
+                }
+                
+                // Calling Custom Capping
+                if(!cappingProjectIdSet.isEmpty()) {
+                    for(Id projectId :cappingProjectIdSet) {
+                        cappingProjectList.add(oppMap.get(projectId));
+                    }
+                }
+                 
+                if(cappingProjectList.size()>0) {
+                    List<OpportunityLineItem> customPMList = AP_EI_Projectutils.customCapping(cappingProjectList);
+                    
+                    if(customPMList.size()>0) {
+                        update customPMList; 
+                    }
+                }
+
+                // Cascade the savings to kicker record if the measure is custom, else cascade the quantity if the measure is deemed.
+                for(OpportunityLineItem oli : newMap.values()) {
+                    
+                    // filter criteria for kicker
+                    if(((oli.F_KW_Savings_EI__c            != oldMap.get(oli.id).F_KW_Savings_EI__c            && oli.F_KW_Savings_EI__c <> null)            || 
+                        (oli.F_KWH_Savings_EI__c           != oldMap.get(oli.id).F_KWH_Savings_EI__c           && oli.F_KWH_Savings_EI__c <> null)           ||
+                        (oli.F_Therm_Savings_EI__c         != oldMap.get(oli.id).F_Therm_Savings_EI__c         && oli.F_Therm_Savings_EI__c <> null)         ||
+                        (oli.F_Unit_of_Equipment_Qty_EI__c != oldMap.get(oli.id).F_Unit_of_Equipment_Qty_EI__c && oli.F_Unit_of_Equipment_Qty_EI__c <> null) ||
+                        (oli.F_Unit_of_Measure_Qty_EI__c   != oldMap.get(oli.id).F_Unit_of_Measure_Qty_EI__c   && oli.F_Unit_of_Measure_Qty_EI__c <> null))  && 
+                        !projectStatusSet.contains(oppMap.get(oli.OpportunityId).StageName) &&
+                        !recordTypeNameSetESA.contains(oppMap.get(oli.OpportunityId).RecordType.DeveloperName)) {
+                        kickerCascadeSavingsList.add(oli);
+                    }
+                
+                    //filter criteria for SBD
+                    if(customProjectIdSet.contains(oli.OpportunityId)) {
+                        if(oli.Total_Custom_Incentive_EI__c != oldMap.get(oli.id).Total_Custom_Incentive_EI__c && oli.Total_Custom_Incentive_EI__c != Null && !oli.Savings_by_Design_EI__c) {
+                            
+                            oppIdSet.add(oli.OpportunityId);
+                            
+                            if(!nonSbdProjPMMap.containsKey(oli.OpportunityId)){
+                                nonSbdProjPMMap.put(oli.OpportunityId, new List<OpportunityLineItem>{oli});
+                            }
+                            else {
+                                nonSbdProjPMMap.get(oli.OpportunityId).add(oli);
+                            }
+                        }
+                    }
+                }
+                
+                if(kickerCascadeSavingsList.size()>0) {
+                    Map<Id, EI_Kicker__c> kickerMap = cascadeSavingsToKickers(kickerCascadeSavingsList);
+                    
+                    if(!kickerMap.isEmpty()) {
+                        update kickerMap.values();
+                    }
+                    
+                    Map<Id, EI_Kicker__c> kickerUpdateMap = new Map<Id, EI_Kicker__c>([SELECT Id, KW_Savings_EI__c, KwH_Savings_EI__c, 
+                                                                                        Therm_Savings_EI__c, Quantity_of_Equipment_EI__c, 
+                                                                                        Total_Kicker_Incentive_EI__c 
+                                                                                        FROM EI_Kicker__c WHERE Id IN:kickerMap.keySet()]);
+                                            
+                    Set<Id> projectMeasureIdSet = new Set<Id>();                                                          
+                    for(OpportunityLineItem oli :kickerCascadeSavingsList) {
+                        projectMeasureIdSet.add(oli.Id);
+                    }
+                                                          
+                    for(OpportunityLineItem oli: [SELECT ID, Kicker_EI__c, Kicker_Sum_EI__c FROM OpportunityLineItem WHERE ID In:projectMeasureIdSet]) {
+                        if(oli.Kicker_EI__c != null && kickerUpdateMap.containsKey(oli.Kicker_EI__c)) {
+                            oli.Kicker_Sum_EI__c = kickerUpdateMap.get(oli.Kicker_EI__c).Total_Kicker_Incentive_EI__c;
+                            oliList.add(oli);
+                        }
+                    }
+                    
+                    if(oliList.size()>0) {
+                        update oliList;
+                    }
+                }
+                
+                // Saving-By-Design : Changing Custom Incentive Amount on Custom Project Measure.
+                if(!oppIdSet.isEmpty()) {
+                    for(OpportunityLineItem pM : [SELECT Id, Provided_Incentive_EI__c, OpportunityId FROM OpportunityLineItem WHERE OpportunityId IN: oppIdSet AND Savings_by_Design_EI__c = true AND Payment_EI__c = Null]) {
+                        if(!sbdProjPMMap.containsKey(pM.OpportunityId)){
+                            sbdProjPMMap.put(pM.OpportunityId, new List<OpportunityLineItem>{pM});
+                        }
+                        else {
+                            sbdProjPMMap.get(pM.OpportunityId).add(pM);
+                        }
+                    }
+                }
+                
+                // Calculating new Incentive on Design Project Measure based on Custom Project Measure
+                for(Id projId : nonSbdProjPMMap.keySet()) {
+                    nonSBD = nonSbdProjPMMap.get(projId)[0];
+            
+                    if(sbdProjPMMap.containsKey(projId)) {
+                        for(OpportunityLineItem sbdOLI : sbdProjPMMap.get(projId)) {
+                            sbdOLI.Provided_Incentive_EI__c = nonSBD.Total_Custom_Incentive_EI__c/6;
+                            sbdOLIList.add(sbdOLI); 
+                        }
+                    }
+                }
+                
+                if(sbdOLIList.size()>0) {
+                    executeOLITrigger = false; 
+                    update sbdOLIList;
+                }
+                
+               /* //Added by sambit on 7/19/2017 for STY -1107 : NGAT Required logic
+                list<opportunity> updateopty=new list<opportunity>();
+                map<id,list<OpportunityLineItem>> optyoptylineMap=new map<id,list<OpportunityLineItem>>();
+                for(OpportunityLineItem oli:[Select id,opportunityid from OpportunityLineItem where id IN:newMap.keyset() and Project_Measure_Status_EI__c NOT IN:projectMeasureStatusSet]){
+                    opptyidset.add(oli.opportunityid);
+                }
+                list<opportunity> opplist=new list<opportunity>([Select id,ESA_SubCon_NGAT_Required_EI__c,Program_EI__r.Processing_Workflow_EI__c,(select id,product2.ESA_Infiltration__c,Project_Measure_Status_EI__c from OpportunityLineItems) from opportunity where id IN:opptyidset]);
+                for(opportunity op:opplist)
+                    optyoptylineMap.put(op.id,new list<OpportunityLineItem>(op.OpportunityLineItems));
+                for(opportunity op:opplist)
+                {
+                    if(optyoptylineMap.containskey(op.id) && op.Program_EI__r.Processing_Workflow_EI__c!='Repair and Replacement'){
+                        for(OpportunityLineItem ol:optyoptylineMap.get(op.id)){
+                            if(ol.product2.ESA_Infiltration__c==true && !projectMeasureStatusSet.contains(ol.Project_Measure_Status_EI__c)){
+                                op.ESA_SubCon_NGAT_Required_EI__c=true;
+                                break;
+                            }
+                            else 
+                                op.ESA_SubCon_NGAT_Required_EI__c=false;
+                        }
+                        updateopty.add(op);
+                    }
+                    
+                }
+                update updateopty;*/
+            }
+        } catch(Exception e) {
+            EI_CreateErrorLog.upsertException(EI_CreateErrorLog.logException('AP_EI_OpportunityLineItemTriggerHandler', e));
+        }
+    }
+    
+    
+    /**
+    * @Description: Before Delete Trigger Handler
+    * @Parameter: Map<Id, Opportunity> oldMap
+    * @Return: void
+    * @Usage: This method is called from Opportunity Line Item Trigger, on before delete.
+    **/ 
+    public static void handleBeforeDelete(Map<Id, OpportunityLineItem> oldMap) {
+        
+        // Allow deletion only for System Administrator profile -- START (STY-00933)
+        AP_EI_ProjectMeasureUtils.checkDeletionForSysAdmin(oldMap);
+        // Allow deletion only for System Administrator profile -- END (STY-00933)
+        
+        //Added By Sambit on 7/19/2017 for STY-1107
+        /*system.debug('##oldMap '+oldMap);
+        Map<Id, OpportunityLineItem> oldMapEsa=new Map<Id, OpportunityLineItem>();
+        for(OpportunityLineItem ol:oldMap.values()){
+            system.debug('##RC '+ol.opportunity.recordtypeid);
+            if(recordtypesetESA.contains(ol.opportunity.recordtype.name)){
+                oldMapEsa.put(ol.id,ol);
+            }
+        }
+        system.debug('##oldMapEsa '+oldMapEsa);*/
+        checkNGATReq(oldMap);
+        Map<Id, OpportunityLineItem> haveEsapMap=new Map<Id, OpportunityLineItem>([Select id,opportunityid,product2.ESA_ESAP_Measure_Category_EI__c from OpportunityLineItem where product2.ESA_ESAP_Measure_Category_EI__c!=null and id IN:oldMap.keyset()]);
+        
+        if(haveEsapMap.size()>0)
+            deleteEsapMeasure(haveEsapMap);
+    }
+    
+    /**
+    * @Description: After Delete Trigger Handler
+    * @Parameter: Map<Id, Opportunity> oldMap
+    * @Return: void
+    * @Usage: This method is called from Opportunity Line Item Trigger, on before delete.
+    **/ 
+    /*public static void handleAfterDelete(Map<Id, OpportunityLineItem> oldMap) {
+        
+        system.debug('inside handleAfterDelete');
+        Map<Id, OpportunityLineItem> haveEsapMap=new Map<Id, OpportunityLineItem>([Select id,opportunityid,product2.ESA_ESAP_Measure_Category_EI__c from OpportunityLineItem where product2.ESA_ESAP_Measure_Category_EI__c!=null and id IN:oldMap.keyset()]);
+        
+        if(haveEsapMap.size()>0)
+            deleteEsapMeasure(haveEsapMap);
+        
+    }*/
+    
+    
+    /**
+    * @Description: Static method for checking MandatoryFieldcheck
+    * @Parameter: List of Project Measure
+    * @Return: None
+    * @Usage: 
+    **/
+     public static Map<Id, EI_Kicker__c> cascadeSavingsToKickers(List<OpportunityLineItem> oliList) {
+        
+        // Variable declaration
+        Map<Id, EI_Kicker__c> kickerUpdateMap = new Map<Id, EI_Kicker__c>();
+        Set<Id> measureIdSet = new Set<Id>();
+        Set<Id> kickerIdSet = new Set<Id>();
+        
+        try { 
+            // iterate over the project measures to get the measure id.
+            for(OpportunityLineItem oli :oliList) {
+                measureIdSet.add(oli.Product2Id);
+                if(oli.Kicker_EI__c != null) {
+                    kickerIdSet.add(oli.Kicker_EI__c);
+                }
+            }
+            
+            // querying the measure records.
+            Map<Id, Product2> measureMap = new Map<Id, Product2>([SELECT Id, meas_Type_Code_EI__c FROM Product2 WHERE Id IN: measureIdSet]);
+                
+            // updating kicker based on measure code
+            for(OpportunityLineItem oli :oliList) {
+                if(oli.Kicker_EI__c != null) { 
+                    if(measureMap.containsKey(oli.Product2Id)) {
+                        if(measureMap.get(oli.Product2Id).meas_Type_Code_EI__c != null) {
+                            EI_Kicker__c kicker = new EI_Kicker__c(Id=oli.Kicker_EI__c);
+                            if(measureMap.get(oli.Product2Id).meas_Type_Code_EI__c == MEASURE_CODE_CUSTOM) {
+                                kicker.KW_Savings_EI__c = oli.F_KW_Savings_EI__c;
+                                kicker.KwH_Savings_EI__c = oli.F_KWH_Savings_EI__c;
+                                kicker.Therm_Savings_EI__c = oli.F_Therm_Savings_EI__c;
+                                kickerUpdateMap.put(oli.Kicker_EI__c, kicker);
+                            }
+                            else if(measureMap.get(oli.Product2Id).meas_Type_Code_EI__c == MEASURE_CODE_DEEMED) {
+                                kicker.Quantity_of_Equipment_EI__c = oli.F_Unit_of_Equipment_Qty_EI__c * oli.F_Unit_of_Measure_Qty_EI__c;
+                                kickerUpdateMap.put(oli.Kicker_EI__c, kicker);
+                            }
+                            else {
+                                continue;
+                            } 
+                        }
+                    }
+                }
+            }
+        } catch(Exception e) {
+            EI_CreateErrorLog.upsertException(EI_CreateErrorLog.logException('AP_EI_OpportunityLineItemTriggerHandler', e));
+        }
+        
+        return kickerUpdateMap;
+    }
+    
+    
+    /**
+    * @Description: Static method for checking MandatoryFieldcheck
+    * @Parameter: List of Project Measure
+    * @Return: None
+    * @Usage: 
+    **/
+    public static void AfterUpdateMandatoryFieldCheck(List<OpportunityLineItem> OppLinelist){
+        
+        // Variable Declaration
+        Map<Id, OpportunityLineItem> opportunityLineItemMap1 = new Map<Id, OpportunityLineItem>();
+        Map<Id,List<OpportunityLineItem>> oppWithOliListMap1 = new Map<Id,List<OpportunityLineItem>>();
+        List<Id> oppIdLst1 = new List<Id>();
+        Set<Id> opptyIds1 = new Set<Id>();
+        List<Opportunity> opplist1 = new list<opportunity>();
+        List<OpportunityLineItem> OppLineList1= new list<OpportunityLineItem>();
+        List<Opportunity> updateOpplist = new list<Opportunity>();
+        Set<id> Prgids =new set<id>();
+        Map<Id, List<EI_Required_Field_Validation__c>> programRFMap1 = new Map<Id, List<EI_Required_Field_Validation__c>>();
+        string Querystring='';
+            
+        
+        try {
+            // capturing Project from Project Measure
+            for(OpportunityLineItem oliRec1:OppLineList){
+                opptyIds1.add(oliRec1.OpportunityId);
+            }
+            
+            List<OpportunityLineItem> completeOpptyLineRecList1 = [Select id,name,OpportunityId,Are_Man_Fields_Validated_EI__c from OpportunityLineItem where OpportunityId IN:opptyIds1 AND Project_Measure_Status_EI__c NOT IN:projectMeasureStatusSet];
+            
+            // Capturing Project Measures against each Project
+            for(OpportunityLineItem oli1:completeOpptyLineRecList1){
+                 if(!oppWithOliListMap1.containsKey(oli1.opportunityId)){
+                     oppWithOliListMap1.put(oli1.opportunityId,new List<OpportunityLineItem>{oli1}); 
+                 }
+                 else{
+                     oppWithOliListMap1.get(oli1.opportunityId).add(oli1);
+                 }
+             }
+            
+            // Checking the Opportunity for mandatory fields against Program
+            for(Id oppId:oppWithOliListMap1.keySet()) {
+                Boolean isDiffrntStatus1 = false;
+                for(OpportunityLineItem  oli2: oppWithOliListMap1.get(oppId)) {
+                    if(oli2.Are_Man_Fields_Validated_EI__c!=True){
+                        isDiffrntStatus1 = true;
+                    }
+                }
+                if(!isDiffrntStatus1){
+                    oppIdLst1.add(oppId); 
+                }
+            }
+       
+            opplist1 =[select id,EI_Error_Summary__c,Program_EI__c from Opportunity where id IN :oppIdLst1];
+            for(Opportunity Opp1:opplist1 ) {
+                if(String.isNotEmpty(Opp1.Program_EI__c)) {
+                    Prgids.add(Opp1.Program_EI__c);
+                }
+            }
+           
+            for(EI_Required_Field_Validation__c rF : [SELECT Target_Object_EI__c, Field_Name_EI__c, Field_API_EI__c, Program_EI__c, Object_API_EI__c FROM EI_Required_Field_Validation__c WHERE Program_EI__c IN: Prgids AND Target_Object_EI__c = 'Project' ]){
+                if(!programRFMap1.containsKey(rF.Program_EI__c)) {
+                    programRFMap1.put(rF.Program_EI__c, new List<EI_Required_Field_Validation__c>{rF});
+                    if(rf.Field_API_EI__c!=null) {
+                        Querystring+=rf.Field_API_EI__c+',';
+                    }
+                }
+                else {
+                    programRFMap1.get(rF.Program_EI__c).add(rF);
+                    if(rf.Field_API_EI__c!=null) {
+                        Querystring+=rf.Field_API_EI__c+',';
+                    }  
+                }
+            }
+         
+            if(oppIdLst1.size()>0) {  
+                
+                String query = 'SELECT Id, Are_Man_Fields_Validated_EI__c, EI_Error_Summary__c, Program_EI__c';
+                
+                if(!String.isBlank(Querystring)) {
+                    query += ', '+Querystring;
+                }
+                
+                if(query.subString(query.length()-1, query.length()) == ',') {
+                    query = query.subString(0, query.length()-1);
+                }
+                query += ' From Opportunity WHERE id IN :oppIdLst1';
+                updateOpplist = Database.Query(query);
+            }   
+            
+            // Mandatory Field Validation
+            AP_EI_MandatoryFieldValidation.validateProject(updateOpplist,isBulkUpload );
+            
+            if(updateOppList.size()>0) {
+                update updateOpplist;
+            }  
+        } catch(Exception e) {
+            EI_CreateErrorLog.upsertException(EI_CreateErrorLog.logException('AP_EI_OpportunityLineItemTriggerHandler', e));
+        }
+    }   
+    
+    /**
+    * @Description: Static method for populating address on Project Measure
+    * @Parameter: List of Project Measure
+    * @Return: None
+    * @Usage: 
+    **/
+    
+    public static void populateAddress(List<OpportunityLineItem> pmList) {            
+        
+        // Variable Declaration
+        List<AP_EI_AddressToken__c> addrTokenList = AP_EI_AddressToken__c.getall().values();
+        Map<String, String> tokenMap = new Map<String, String>();
+        
+        try {
+            // Get list of Tokens from the custom setting
+            for(AP_EI_AddressToken__c addrToken : addrTokenList ) {
+                tokenMap.put(addrToken.Name , addrToken.Token_EI__c );
+            }
+            
+            // Populating Total Site Address on Project Measure based on Tokens
+            for(OpportunityLineItem pm : pmList) {
+            
+                String temp = (String.ISNOTBLANK(pm.Site_Address_EI__c)? pm.Site_Address_EI__c.trim()+' ' : '') + 
+                              (String.ISNOTBLANK(pm.Site_City_EI__c)? pm.Site_City_EI__c.trim()+' ' : '') + 
+                              (String.ISNOTBLANK(pm.Site_State_EI__c)? pm.Site_State_EI__c.trim()+' ' : '');
+                                
+                if(String.ISNOTBLANK(pm.Site_Zip_EI__c )) {
+                    if(pm.Site_Zip_EI__c.trim().length() > 5) {
+                        temp += pm.Site_Zip_EI__c.trim().subString(0,5);
+                    }
+                    else {
+                        temp += pm.Site_Zip_EI__c.trim();
+                    }
+                }
+                
+                temp = (temp.replaceAll('[^A-Za-z0-9 ]', '')).touppercase();
+                String[] subAddrs = temp.split(' ');
+                
+                for(string subAddr : subAddrs) {  
+                    if(tokenMap.containsKey(subAddr)) {
+                        if(tokenMap.get(subaddr) != null) {  
+                            temp = temp.replace(subaddr, tokenMap.get(subaddr));
+                        }
+                    }
+                }
+                
+                pm.Site_Full_Address_EI__c = temp;                      
+            }
+        } catch(Exception e) {
+            EI_CreateErrorLog.upsertException(EI_CreateErrorLog.logException('AP_EI_OpportunityLineItemTriggerHandler', e));
+        }
+    }
+
+    /**
+    * @Description: Static method for PopulateClimate
+    * @Parameter: List of Project Measure
+    * @Return: List of ProjectMeasure
+    * @Usage: 
+    **/    
+    public static List<OpportunityLineItem> populateClimateZone(List<OpportunityLineItem> pmList) {
+        
+        // Variable Declaration
+        Set<String> zipCodeSet = new Set<String>();
+        Map<String, String> zipCodeClimateZoneMap = new Map<String, String>();
+        
+        try {
+            // capturing Site Zip from Opportunity Line Item
+            for(OpportunityLineItem oli :pmList) {
+                if(!String.isBlank(oli.Site_Zip_EI__c)) {
+                    zipCodeSet.add(oli.Site_Zip_EI__c);
+                }
+            }
+            
+            // Capturing Climate Zone against Zip code
+            
+            for(EI_Zip_Climate_Mapping__c zipRecord: [SELECT Zip_Code__c, Climate_Zone__c FROM EI_Zip_Climate_Mapping__c WHERE Zip_Code__c IN :zipCodeSet]) {
+                zipCodeClimateZoneMap.put(zipRecord.Zip_Code__c, zipRecord.Climate_Zone__c);
+            }
+            
+            // Assigning correct Site Climate Zone from 'EI_Zip_Climate_Mapping__c' object
+            for(OpportunityLineItem oli :pmList) {
+                if(!String.isBlank(oli.Site_Zip_EI__c) && zipCodeClimateZoneMap.containsKey(oli.Site_Zip_EI__c)) {
+                    oli.Site_Climate_Zone_EI__c = zipCodeClimateZoneMap.get(oli.Site_Zip_EI__c);
+                   
+                }
+                else {
+                    oli.Site_Climate_Zone_EI__c = 'IOU';
+                   
+                }
+            } 
+        } catch(Exception e) {
+            EI_CreateErrorLog.upsertException(EI_CreateErrorLog.logException('AP_EI_OpportunityLineItemTriggerHandler', e));
+        }
+        
+        return pmList;
+    }
+    
+    /** oxm5
+    * @Description: Static method for PopulateHydrologicRegion
+    * @Parameter: List of Project Measure
+    * @Return: List of ProjectMeasure
+    * @Usage: 
+    **/    
+    public static List<OpportunityLineItem> populateHydrologicRejion(List<OpportunityLineItem> pmList) {
+        
+        // Variable Declaration
+        Set<String> zipCodeSet = new Set<String>();
+        Map<String, String> zipCodeHydrologicRejionMap = new Map<String, String>();
+        List<OpportunityLineItem> PmHrList = new List<OpportunityLineItem>();
+        try {
+           
+             // capturing Site Zip from Opportunity Line Item
+            for(OpportunityLineItem oli :pmList) {
+                if(!String.isBlank(oli.Site_Zip_EI__c)) {
+                    zipCodeSet.add(oli.Site_Zip_EI__c);
+                }
+            }
+            
+            // Capturing Hydrologic Region against Zip code
+            //replaced Hydrologic_Region__c with Hydrologic_Region_Name__c
+            for(EI_Zip_Climate_Mapping__c zipRecord: [SELECT Zip_Code__c, Hydrologic_Region__c, Hydrologic_Region_Name__c FROM EI_Zip_Climate_Mapping__c WHERE Zip_Code__c IN :zipCodeSet]) {
+                If (zipRecord.Hydrologic_Region__c!=null && zipRecord.Hydrologic_Region_Name__c!=null)
+                {
+                  zipCodeHydrologicRejionMap.put(zipRecord.Zip_Code__c, zipRecord.Hydrologic_Region__c + ' - ' + zipRecord.Hydrologic_Region_Name__c);
+                }
+                else
+                {
+                //zipCodeHydrologicRejionMap.put(zipRecord.Zip_Code__c,'');
+                }
+                        
+            }
+            
+            // Assigning correct Site Hydrologic Rejion from 'EI_Zip_Climate_Mapping__c' object
+            for(OpportunityLineItem oli :pmList) {
+             if(!String.isBlank(oli.Site_Zip_EI__c) && zipCodeHydrologicRejionMap.containsKey(oli.Site_Zip_EI__c))
+               {
+               
+                    oli.Hydrologic_Region__c = zipCodeHydrologicRejionMap.get(oli.Site_Zip_EI__c);
+
+                }
+                else {
+                    //oli.Hydrologic_Region__c = ''; 
+                  
+                }
+            } 
+           
+        } catch(Exception e) {
+            EI_CreateErrorLog.upsertException(EI_CreateErrorLog.logException('AP_EI_OpportunityLineItemTriggerHandler', e));
+        }
+        
+        return pmList;
+    }
+    
+    
+    /**
+    * @Description: Method to populate the building type on Project Measure
+    * @Parameter: List<OpportunityLineItem> pmList
+    * @Return: List<OpportunityLineItem>
+    * @Usage: 
+    **/ 
+    public static List<OpportunityLineItem> populateBuildingType(List<OpportunityLineItem> pmList) {
+        
+        // Variable Declaration
+        Set<Id> siteIdSet = new Set<Id>();
+        Set<Id> opportunityIdSet = new Set<Id>();
+        sObject s = new OpportunityLineItem();
+        Set<String> CEDARSValues = getPickValues(s, 'Site_Bldg_Type_EI__c');
+        Map<Id, EI_Site__c > siteMap = new Map<Id, EI_Site__c>();
+        Map<Id, Opportunity> opportunityMap = new Map<Id, Opportunity>();
+        Map<String, String> sectorCodeMap = new Map<String, String>{'IND' => 'IndOth', 'AGR' => 'AgOth', 'RSD' => 'Res', 'COM'=>'Com'};
+
+        try {
+            // capturing Site and Opportunity from Project Measure
+            for(OpportunityLineItem oli : pmList) {
+                siteIdSet.add(oli.Site_Service_Agreement_EI__c);
+                opportunityIdSet.add(oli.OpportunityId);
+            }
+            
+            // Creating Opportunity Map
+            for(Opportunity opp : [SELECT Id,Program_EI__r.Del_Typ_CEEDARS_EI__c FROM Opportunity WHERE Id IN: opportunityIdSet]) {
+                opportunityMap.put(opp.Id, opp);
+            }
+            
+            // Capturing Site Map
+            if(!siteIdSet.isEmpty()) {
+                for(EI_Site__c site: [SELECT Id, Building_Type_EI__c, NAICS_Code_relation_EI__c, NAICS_Code_relation_EI__r.Building_Type_EI__c, NAICS_Code_relation_EI__r.Sector_Code_EI__c FROM EI_Site__c WHERE Id IN:siteIdSet]) {
+                    siteMap.put(site.Id, site);
+                }
+            }
+            
+            // Populating Building Type here or throwing Error
+            EI_Site__c site = null;
+            String siteBuildingType = null;
+            String naicsBuildingType = null;
+            
+            for(OpportunityLineItem oli: pmList) {
+                if(siteMap.containsKey(oli.Site_Service_Agreement_EI__c)) {
+                    
+                    // site on project measure.
+                    site = siteMap.get(oli.Site_Service_Agreement_EI__c); 
+                    
+                    // building type on site
+                    siteBuildingType = (site.Building_Type_EI__c != null ? site.Building_Type_EI__c.split('-')[0].trim().toUpperCase() : null); 
+                    
+                    // building type on NAICS
+                    if(site.NAICS_Code_relation_EI__c != null) {
+                        naicsBuildingType = (site.NAICS_Code_relation_EI__r.Building_Type_EI__c != null ? site.NAICS_Code_relation_EI__r.Building_Type_EI__c.split('-')[0].trim().toUpperCase(): null);
+                    }
+                    else {
+                        naicsBuildingType = null;
+                    }
+                    
+                    // there is a field dependency between site building type descritption and site building type.
+                    if(String.isBlank(oli.Building_Type_Description__c)) {
+                        oli.Building_Type_Description__c = 'None';
+                    }
+                    
+                    if(siteBuildingType != null && CEDARSValues.contains(siteBuildingType)) {
+                        oli.Site_Bldg_Type_EI__c = siteBuildingType;
+                    }
+                    else {
+                        if(String.isBlank(siteBuildingType) || !CEDARSValues.contains(siteBuildingType)) {
+                            if(String.isBlank(site.NAICS_Code_relation_EI__c)) {
+                                if(!String.isBlank(oli.EI_Error_Summary__c)){
+                                    if(!oli.EI_Error_Summary__c.contains(System.Label.EI_NAICSNotFoundError)) {
+                                        oli.EI_Error_Summary__c += System.Label.EI_NAICSNotFoundError;
+                                    }
+                                }
+                                else {
+                                    oli.EI_Error_Summary__c = System.Label.EI_NAICSNotFoundError;
+                                }
+                                
+                                // set the status on project measure to errors.
+                                oli.System_Val_Status_EI__c = 'Errors';
+                            }
+                            else if(String.isBlank(site.NAICS_Code_relation_EI__r.Building_Type_EI__c) || !CEDARSValues.contains(naicsBuildingType)) {
+                                if(!String.isBlank(oli.EI_Error_Summary__c)){
+                                    if(oli.EI_Error_Summary__c.contains(System.Label.EI_NAICSNotFoundError)) {
+                                        oli.EI_Error_Summary__c = oli.EI_Error_Summary__c.remove(System.Label.EI_NAICSNotFoundError);
+                                    }
+                                }
+                                if(!String.isBlank(site.NAICS_Code_relation_EI__r.Sector_Code_EI__c)) {
+                                    if(sectorCodeMap.containsKey(site.NAICS_Code_relation_EI__r.Sector_Code_EI__c)) {
+                                        if(site.NAICS_Code_relation_EI__r.Sector_Code_EI__c == 'COM') {
+                                            if(!String.isBlank(opportunityMap.get(oli.OpportunityId).Program_EI__r.Del_Typ_CEEDARS_EI__c) && 'PreRebUp'.equalsIgnoreCase(opportunityMap.get(oli.OpportunityId).Program_EI__r.Del_Typ_CEEDARS_EI__c)) {
+                                                oli.Site_Bldg_Type_EI__c = sectorCodeMap.get(site.NAICS_Code_relation_EI__r.Sector_Code_EI__c); 
+                                            }
+                                            else {
+                                                oli.Site_Bldg_Type_EI__c = 'OTR';
+                                            }
+                                        }
+                                        else {
+                                            oli.Site_Bldg_Type_EI__c = sectorCodeMap.get(site.NAICS_Code_relation_EI__r.Sector_Code_EI__c);
+                                        }
+                                    } else {
+                                        if(!String.isBlank(oli.EI_Error_Summary__c)){
+                                            if(!oli.EI_Error_Summary__c.contains(System.Label.EI_NoValidaCEDARValueOnNAICS)) {
+                                                oli.EI_Error_Summary__c += System.Label.EI_NoValidaCEDARValueOnNAICS;
+                                            }
+                                        }
+                                        else {
+                                            oli.EI_Error_Summary__c = System.Label.EI_NoValidaCEDARValueOnNAICS;
+                                        }
+                                        oli.System_Val_Status_EI__c = 'Errors';
+                                    }
+                                }
+                            }
+                            else {
+                                if(!String.isBlank(naicsBuildingType) && CEDARSValues.contains(naicsBuildingType)) {
+                                    oli.Site_Bldg_Type_EI__c = naicsBuildingType;
+                                }
+                                
+                                if(!String.isBlank(oli.EI_Error_Summary__c)) {
+                                    if(oli.EI_Error_Summary__c.contains(System.Label.EI_NAICSNotFoundError)) {
+                                        oli.EI_Error_Summary__c = oli.EI_Error_Summary__c.remove(System.Label.EI_NAICSNotFoundError);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch(Exception e) {
+            EI_CreateErrorLog.upsertException(EI_CreateErrorLog.logException('AP_EI_OpportunityLineItemTriggerHandler', e));
+        }
+
+        return pmList;
+    }
+    
+    
+    /**
+    * @Description: Fetch the CEEDARS values.
+    * @Parameter: Sobject objectName, String fieldName
+    * @Return: Set<String>
+    * @Usage: This method gets all the building type picklist values(CEEDARS Values) of project measure.
+    **/ 
+    public static Set<String> getPickValues(sObject objectName, String fieldName) {
+        
+        try {
+            // Returing field details of sObject and fieldname
+            Set<String> options = new Set<String>();
+            Schema.sObjectType sobject_type = objectName.getSObjectType(); 
+            Schema.DescribeSObjectResult sobject_describe = sobject_type.getDescribe(); 
+            Map<String, Schema.SObjectField> field_map = sobject_describe.fields.getMap(); 
+            List<Schema.PicklistEntry> pick_list_values = field_map.get(fieldName).getDescribe().getPickListValues(); 
+            
+            for (Schema.PicklistEntry a : pick_list_values) { 
+                options.add(a.getValue().toUpperCase());
+            }
+            
+            return options; 
+        } catch(Exception e) {
+            EI_CreateErrorLog.upsertException(EI_CreateErrorLog.logException('AP_EI_OpportunityLineItemTriggerHandler', e));
+        }
+        
+        return null;
+    }
+    
+    /**
+    * @Description: Static method for DoubleDip
+    * @Parameter: List of Project Measure
+    * @Return: 
+    * @Usage: 
+    **/      
+    
+    public static void checkDoubleDipStatus(list<OpportunityLineItem> OppLineList) {
+    
+        try {
+            // Variable declaration
+            Map<Id, OpportunityLineItem> opportunityLineItemMap = new Map<Id, OpportunityLineItem>();
+            Map<Id,List<OpportunityLineItem>> oppWithOliListMap = new Map<Id,List<OpportunityLineItem>>();
+            List<OpportunityLineItem> completeOpptyLineRecList = new List<OpportunityLineItem>();
+            List<Id> oppIdLst = new List<Id>();
+            Set<Id> opptyIds = new Set<Id>();
+            
+            // Constant Declaration
+            final String DD_STATUS_REVIEWED = 'Reviewed';
+        
+            // Capturing Opportunity from Project Measures
+            for(OpportunityLineItem oliRec:OppLineList){
+                opptyIds.add(oliRec.OpportunityId);
+            }
+            
+            for(OpportunityLineItem oli: [SELECT id,name,OpportunityId,Double_Dip_Rvw_Status_EI__c,Double_Dip_Status_EI__c FROM OpportunityLineItem WHERE OpportunityId IN:opptyIds AND Project_Measure_Status_EI__c NOT IN:projectMeasureStatusSet]) {
+                completeOpptyLineRecList.add(oli);
+            }
+            
+            // capturing Map of Opportunity against all Project Measures inside Project
+            for(OpportunityLineItem oli:completeOpptyLineRecList) {
+                if(!oppWithOliListMap.containsKey(oli.opportunityId)) {
+                    oppWithOliListMap.put(oli.opportunityId,new List<OpportunityLineItem>{oli});
+                }
+                else{
+                    oppWithOliListMap.get(oli.opportunityId).add(oli);
+                }
+            }
+            
+            // Marking Double Dip Status as Reviewed if same status
+            Boolean isDiffrntStatus;
+            for(Id oppId:oppWithOliListMap.keySet()) {
+                isDiffrntStatus = false;
+                for(OpportunityLineItem  oli: oppWithOliListMap.get(oppId)) {
+                    if(((oli.Double_Dip_Rvw_Status_EI__c == DD_STATUS_REVIEWED)&& (oli.Double_Dip_Status_EI__c =='Yes')) || oli.Double_Dip_Status_EI__c != 'Yes' ) {
+                        isDiffrntStatus = true;
+                    }
+                }
+                if(isDiffrntStatus) {
+                    oppIdLst.add(oppId); 
+                }
+            }
+            if(oppIdLst.size()>0) {
+                List<Opportunity> opplist = new List<Opportunity>();
+                
+                for(Opportunity op: [SELECT id,Double_Dip_Status_EI__c FROM Opportunity WHERE id IN :oppIdLst]) {
+                    op.Double_Dip_Status_EI__c = DD_STATUS_REVIEWED;
+                    opplist.add(op);
+                }
+                
+                if(opplist.size() >0) {
+                    update opplist ;
+                }
+            }
+        } catch(Exception e) {
+            EI_CreateErrorLog.upsertException(EI_CreateErrorLog.logException('AP_EI_OpportunityLineItemTriggerHandler', e));
+        }
+    }  
+    
+    //added by sambit on 7/19/2017 for STY-1107
+    public static void checkNGATReq(Map<Id, OpportunityLineItem> oldMap) {   
+        
+        set<id> opptyidset=new set<id>();
+        list<opportunity> updateopty=new list<opportunity>();
+        map<id,list<OpportunityLineItem>> optyoptylineMap=new map<id,list<OpportunityLineItem>>();
+        for(OpportunityLineItem oli:oldMap.values()){
+            opptyidset.add(oli.opportunityid);
+        }
+        list<opportunity> opplist=new list<opportunity>([Select id,ESA_SubCon_NGAT_Required_EI__c,Program_EI__r.Processing_Workflow_EI__c,(select id,product2.ESA_Infiltration__c,Project_Measure_Status_EI__c from OpportunityLineItems) from opportunity where id IN:opptyidset]);
+        system.debug('opplist is '+opplist);
+        for(opportunity op:opplist){
+            for(OpportunityLineItem ol:op.OpportunityLineItems){
+                if(!oldMap.keyset().contains(ol.id)){
+                    if(!optyoptylineMap.containskey(op.id))
+                        optyoptylineMap.put(op.id,new list<OpportunityLineItem>{ol});
+                    else
+                        optyoptylineMap.get(op.id).add(ol);
+                }
+            }
+        }
+        system.debug('optyoptylineMap is '+optyoptylineMap);    
+        for(opportunity op:opplist)
+        {
+            if(optyoptylineMap.containskey(op.id) && op.Program_EI__r.Processing_Workflow_EI__c!='Repair and Replacement'){
+                for(OpportunityLineItem ol:optyoptylineMap.get(op.id)){
+                    if(ol.product2.ESA_Infiltration__c==true && !projectMeasureStatusSet.contains(ol.Project_Measure_Status_EI__c)){
+                        op.ESA_SubCon_NGAT_Required_EI__c=true;
+                        break;
+                    }
+                    else 
+                        op.ESA_SubCon_NGAT_Required_EI__c=false;
+                }
+                updateopty.add(op);
+            }
+            
+        }
+        update updateopty;  
+    }  
+    
+    //added by sambit on 7/19/2017 for STY-1107
+    public static void deleteEsapMeasure(Map<Id, OpportunityLineItem> esapMap) { 
+        
+        System.debug('inside after delete');
+        set<id> opptyidset=new set<id>();
+        integer count;
+        set<string> esapid=new set<string>();
+        list<OpportunityLineItem> toDelete=new list<OpportunityLineItem>();
+        for(OpportunityLineItem ol:esapMap.values()){
+            esapid.add(ol.product2.ESA_ESAP_Measure_Category_EI__c);
+            opptyidset.add(ol.opportunityid);
+        }
+        System.debug('##opptyidset '+opptyidset);
+        count=0;
+        for(OpportunityLineItem ol:[Select id,product2.ESA_ESAP_Measure_Category_EI__c from OpportunityLineItem where opportunityid IN:opptyidset]){
+            if(esapid.contains(ol.product2.ESA_ESAP_Measure_Category_EI__c))
+                count++;
+        }
+        System.debug('##count '+count);
+        if(count==1){
+            toDelete=[Select id from OpportunityLineItem where product2.id=:esapid];
+            delete toDelete;
+        }
+    }
+    
+    //Added by sambit on 10/12/2017 for restricting users for selecting in appropriate entry on ESa PM picklist values
+    public static void ProfileRestriction(Map<Id, OpportunityLineItem> newMap,Map<Id, OpportunityLineItem> oldMap){
+      
+      Id profileId=userinfo.getProfileId();
+    String profileName=[Select Id,Name from Profile where Id=:profileId].Name;
+    system.debug('##Profile name '+profileName);
+    for(OpportunityLineItem ol:newMap.values()){
+      system.debug('##New Cap Value '+newMap.get(ol.id).ESA_Cap_Approval_Status_EI__c);
+            if(newMap.get(ol.id).ESA_Cap_Approval_Status_EI__c!=oldMap.get(ol.id).ESA_Cap_Approval_Status_EI__c && newMap.get(ol.id).ESA_Cap_Approval_Status_EI__c=='Validated' && (profileName=='ESA Implementer' || profileName=='ESA Sub-Contractor')){
+                ol.adderror(label.ESA_CapApproval);
+            }
+            if(newMap.get(ol.id).ESA_Cap_Approval_Status_EI__c!=oldMap.get(ol.id).ESA_Cap_Approval_Status_EI__c && newMap.get(ol.id).ESA_Cap_Approval_Status_EI__c=='Implementer Reviewed' && (profileName=='ESA Sub-Contractor' || profileName=='ESA Program Manager')){
+                ol.adderror(label.ESA_CapApprovalImpl);
+            }
+            if(newMap.get(ol.id).Double_Dip_Rvw_Status_EI__c!=oldMap.get(ol.id).Double_Dip_Rvw_Status_EI__c && newMap.get(ol.id).Double_Dip_Rvw_Status_EI__c=='Reviewed' && (profileName=='ESA Sub-Contractor')){
+                ol.adderror(label.ESA_DDrvwStatus);
+            }
+            if(newMap.get(ol.id).Project_Measure_Status_EI__c!=oldMap.get(ol.id).Project_Measure_Status_EI__c && newMap.get(ol.id).Project_Measure_Status_EI__c=='Post Install Review Passed'){
+                ol.adderror(label.ESA_PIRStatus1);
+            }
+            if(oldMap.get(ol.id).Project_Measure_Status_EI__c=='Post Install Review Passed' &&((newMap.get(ol.id).ESA_Implementer_Approved_Quantity_EI__c!=oldMap.get(ol.id).ESA_Implementer_Approved_Quantity_EI__c) || (newMap.get(ol.id).ESA_Program_Manager_Approved_Quantity_EI__c!=oldMap.get(ol.id).ESA_Program_Manager_Approved_Quantity_EI__c) || (newMap.get(ol.id).ESA_Implementer_Approved_Dollar_EI__c!=oldMap.get(ol.id).ESA_Implementer_Approved_Dollar_EI__c) || (newMap.get(ol.id).ESA_Program_Manager_Approved_Dollar_EI__c!=oldMap.get(ol.id).ESA_Program_Manager_Approved_Dollar_EI__c))){
+                ol.adderror(label.ESA_PIRStatus2);
+            }
+        }
+      
+    }
+    
+}
