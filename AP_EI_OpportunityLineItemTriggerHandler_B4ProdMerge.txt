@@ -20,6 +20,7 @@ Modification Log     :
 * Aarti Jindal              12/12/2016             Commented Kicker Share calling logic as Kicker OWD changed to public Read Only.
 * Naveen K Udatha           2/1/2017               Updating the project measure record to populate kicker sum(Case 00014063 - STY-00042).
 * Oksana Master             3/17/2017              added hydrologic region population for the Deemed measures with Water measures - case 14130
+* Bhushan                   25/9/2017              Story 707 - Moved custom capping related code in After update to before update
 ***************************************************************************************************/
 
 public without sharing class AP_EI_OpportunityLineItemTriggerHandler {
@@ -206,7 +207,11 @@ public without sharing class AP_EI_OpportunityLineItemTriggerHandler {
         List<OpportunityLineItem> oliCZList = new List<OpportunityLineItem>();
         List<OpportunityLineItem> oliBTList = new List<OpportunityLineItem>();
         List<OpportunityLineItem> oliHRList = new List<OpportunityLineItem>();   //oxm5
-        
+        //b1nb - STY-00707 
+        List<OpportunityLineItem> customPMList = new List<OpportunityLineItem>();
+        Set<Id> cappingPMIdSet = new set<Id>();
+        List<OpportunityLineItem> cappingPMList = new List<OpportunityLineItem>();
+        //b1nb - STY-00707 -- ENDS
         try {
             // to stop recursion.
             if(executeOLITrigger) {
@@ -240,8 +245,39 @@ public without sharing class AP_EI_OpportunityLineItemTriggerHandler {
                     if(oli.Site_Service_Agreement_EI__c != null && oli.Site_Service_Agreement_EI__c != oldMap.get(oli.Id).Site_Service_Agreement_EI__c && oli.Site_Bldg_Type_EI__c == null) {
                         oliBTList.add(oli);
                     }
+                    //b1nb - STY-00707
+                    if((oli.Materials_Cost_EI__c != oldMap.get(oli.Id).Materials_Cost_EI__c)                ||
+                       (oli.Inc_Measure_Cost_EI__c != oldMap.get(oli.Id).Inc_Measure_Cost_EI__c)            || 
+                       (oli.Full_Measure_Cost_EI__c != oldMap.get(oli.Id).Full_Measure_Cost_EI__c)          || 
+                       (oli.Implementer_Labor_Cost_EI__c != oldMap.get(oli.Id).Implementer_Labor_Cost_EI__c)||
+                       (oli.EUL_EI__c != oldMap.get(oli.Id).EUL_EI__c)) {
+                        cappingPMIdSet.add(oli.id);
+                           system.debug('@@@@ cappingPMIdSet: '+cappingPMIdSet);
+                    }
+                    //b1nb - STY-00707 Ends
                     
                 }
+                //b1nb - STY-00707
+                if(!cappingPMIdSet.isEmpty()) {
+                    for(Id pmId :cappingPMIdSet) {
+                        cappingPMList.add(newMap.get(pmId));
+                    }
+                }
+                
+                if(cappingPMList.size()>0) {
+                   customPMList = AP_EI_Projectutils.customCappingOLI(cappingPMList);
+                    
+                    if(customPMList.size()>0) {
+                        System.debug('@@@@ customPMList: '+customPMList);
+                        //update customPMList; 
+                        for(integer i=0; i<customPMList.size(); i++){
+                            newMap.get(customPMList[i].id).ERC_EI__c = customPMList[i].ERC_EI__c;
+                            newMap.get(customPMList[i].id).Project_Measure_Cap_EI__c = customPMList[i].Project_Measure_Cap_EI__c;
+                        }
+                        
+                    }
+                }
+                //b1nb - STY-00707 Ends
                 
                 // calling mandotary field validation
                 if(manOppItemList.size()>0 && !isValidationJob ) { // do not run the mandatory field check from batch class.
@@ -319,18 +355,22 @@ public without sharing class AP_EI_OpportunityLineItemTriggerHandler {
         
         try {
             if(executeOLITrigger) {
-            
+                
+                // Sainath to populate Rebate Measure
+                populateRebateMeasures(oldMap,newMap);
+               // system.debug('@@@@ newMap.values(): '+newMap.values());
+               // system.debug('@@@@ oldMap.values(): '+oldMap.values());
                 for(OpportunityLineItem oli :newMap.values()) {
                 
-                    opptyIdSet.add(oli.OpportunityId);
-                    
-                    if((oli.Materials_Cost_EI__c != oldMap.get(oli.Id).Materials_Cost_EI__c)                ||
+                    // opptyIdSet.add(oli.OpportunityId);
+                    /*if((oli.Materials_Cost_EI__c != oldMap.get(oli.Id).Materials_Cost_EI__c)                ||
                        (oli.Inc_Measure_Cost_EI__c != oldMap.get(oli.Id).Inc_Measure_Cost_EI__c)            || 
                        (oli.Full_Measure_Cost_EI__c != oldMap.get(oli.Id).Full_Measure_Cost_EI__c)          || 
                        (oli.Implementer_Labor_Cost_EI__c != oldMap.get(oli.Id).Implementer_Labor_Cost_EI__c)||
                        (oli.EUL_EI__c != oldMap.get(oli.Id).EUL_EI__c)) {
                         cappingProjectIdSet.add(oli.OpportunityId);
-                    } 
+                           system.debug('@@@@ cappingProjectIdSet: '+cappingProjectIdSet);
+                    }*/
                     
                     if((oli.Double_Dip_Rvw_Status_EI__c != oldMap.get(oli.Id).Double_Dip_Rvw_Status_EI__c && oli.Double_Dip_Rvw_Status_EI__c == 'Reviewed' )) {   
                         oliLstUpdated.add(oli);
@@ -368,19 +408,20 @@ public without sharing class AP_EI_OpportunityLineItemTriggerHandler {
                 }
                 
                 // Calling Custom Capping
-                if(!cappingProjectIdSet.isEmpty()) {
+                /*if(!cappingProjectIdSet.isEmpty()) {
                     for(Id projectId :cappingProjectIdSet) {
                         cappingProjectList.add(oppMap.get(projectId));
                     }
-                }
+                }*/
                  
-                if(cappingProjectList.size()>0) {
+                /*if(cappingProjectList.size()>0) {
                     List<OpportunityLineItem> customPMList = AP_EI_Projectutils.customCapping(cappingProjectList);
                     
                     if(customPMList.size()>0) {
+                        System.debug('@@@@ customPMList: '+customPMList);
                         update customPMList; 
                     }
-                }
+                }*/
 
                 // Cascade the savings to kicker record if the measure is custom, else cascade the quantity if the measure is deemed.
                 for(OpportunityLineItem oli : newMap.values()) {
@@ -812,6 +853,9 @@ public without sharing class AP_EI_OpportunityLineItemTriggerHandler {
         // Variable Declaration
         Set<String> zipCodeSet = new Set<String>();
         Map<String, String> zipCodeHydrologicRejionMap = new Map<String, String>();
+        //00971 sidanth
+        Set<String> SaidList= new Set<String>();
+        SaidList.addAll(System.Label.List_of_dummy_SAID_for_HR.Split(','));
         List<OpportunityLineItem> PmHrList = new List<OpportunityLineItem>();
         try {
            
